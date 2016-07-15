@@ -604,24 +604,24 @@ void MRF24J40_HardwareReset(void) {
 }
 
 /*
-1. SOFTRST (0x2A) = 0x07 – Perform a software Reset. The bits will be automatically cleared to ‘0’ by hardware.
-2. PACON2 (0x18) = 0x98 – Initialize FIFOEN = 1 and TXONTS = 0x6.
-3. TXSTBL (0x2E) = 0x95 – Initialize RFSTBL = 0x9.
-4. RFCON0 (0x200) = 0x03 – Initialize RFOPT = 0x03.
-5. RFCON1 (0x201) = 0x01 – Initialize VCOOPT = 0x02.
-6. RFCON2 (0x202) = 0x80 – Enable PLL (PLLEN = 1).
-7. RFCON6 (0x206) = 0x90 – Initialize TXFIL = 1 and 20MRECVR = 1.
-8. RFCON7 (0x207) = 0x80 – Initialize SLPCLKSEL = 0x2 (100 kHz Internal oscillator).
-9. RFCON8 (0x208) = 0x10 – Initialize RFVCO = 1.
-10. SLPCON1 (0x220) = 0x21 – Initialize CLKOUTEN = 1 and SLPCLKDIV = 0x01.
-Configuration for nonbeacon-enabled devices (see Section 3.8 “Beacon-Enabled and Nonbeacon-Enabled Networks”):
-11. BBREG2 (0x3A) = 0x80 – Set CCA mode to ED.
-12. CCAEDTH = PHY_CCA_ED_THRESHOLD – Set CCA ED threshold.
-13. BBREG6 (0x3E) = 0x40 – Set appended RSSI value to RXFIFO.
-14. Enable interrupts – See Section 3.3 “Interrupts”.
-15. Set channel – See Section 3.4 “Channel Selection”.
-16. Set transmitter power - See “REGISTER 2-62: RF CONTROL 3 REGISTER (ADDRESS: 0x203)”.
-17. RFCTL (0x36) = 0x04 – Reset RF state machine.
+1. SOFTRST (0x2A) = 0x07 ? Perform a software Reset. The bits will be automatically cleared to ?0? by hardware.
+2. PACON2 (0x18) = 0x98 ? Initialize FIFOEN = 1 and TXONTS = 0x6.
+3. TXSTBL (0x2E) = 0x95 ? Initialize RFSTBL = 0x9.
+4. RFCON0 (0x200) = 0x03 ? Initialize RFOPT = 0x03.
+5. RFCON1 (0x201) = 0x01 ? Initialize VCOOPT = 0x02.
+6. RFCON2 (0x202) = 0x80 ? Enable PLL (PLLEN = 1).
+7. RFCON6 (0x206) = 0x90 ? Initialize TXFIL = 1 and 20MRECVR = 1.
+8. RFCON7 (0x207) = 0x80 ? Initialize SLPCLKSEL = 0x2 (100 kHz Internal oscillator).
+9. RFCON8 (0x208) = 0x10 ? Initialize RFVCO = 1.
+10. SLPCON1 (0x220) = 0x21 ? Initialize CLKOUTEN = 1 and SLPCLKDIV = 0x01.
+Configuration for nonbeacon-enabled devices (see Section 3.8 ?Beacon-Enabled and Nonbeacon-Enabled Networks?):
+11. BBREG2 (0x3A) = 0x80 ? Set CCA mode to ED.
+12. CCAEDTH = PHY_CCA_ED_THRESHOLD ? Set CCA ED threshold.
+13. BBREG6 (0x3E) = 0x40 ? Set appended RSSI value to RXFIFO.
+14. Enable interrupts ? See Section 3.3 ?Interrupts?.
+15. Set channel ? See Section 3.4 ?Channel Selection?.
+16. Set transmitter power - See ?REGISTER 2-62: RF CONTROL 3 REGISTER (ADDRESS: 0x203)?.
+17. RFCTL (0x36) = 0x04 ? Reset RF state machine.
 18. RFCTL (0x36) = 0x00.
 19. Delay at least 192 µs.
  */
@@ -1197,23 +1197,240 @@ void FormDataPkt(void) {
     MsduLength = i;
 }
 
+
+//functions for decrypting AES
+
+const unsigned char sbox[16*16] = {	//declare static
+   0x63,0x7C,0x77,0x7B,0xF2,0x6B,0x6F,0xC5,0x30,0x01,0x67,0x2B,0xFE,0xD7,0xAB,0x76,
+   0xCA,0x82,0xC9,0x7D,0xFA,0x59,0x47,0xF0,0xAD,0xD4,0xA2,0xAF,0x9C,0xA4,0x72,0xC0,
+   0xB7,0xFD,0x93,0x26,0x36,0x3F,0xF7,0xCC,0x34,0xA5,0xE5,0xF1,0x71,0xD8,0x31,0x15,
+   0x04,0xC7,0x23,0xC3,0x18,0x96,0x05,0x9A,0x07,0x12,0x80,0xE2,0xEB,0x27,0xB2,0x75,
+   0x09,0x83,0x2C,0x1A,0x1B,0x6E,0x5A,0xA0,0x52,0x3B,0xD6,0xB3,0x29,0xE3,0x2F,0x84,
+   0x53,0xD1,0x00,0xED,0x20,0xFC,0xB1,0x5B,0x6A,0xCB,0xBE,0x39,0x4A,0x4C,0x58,0xCF,
+   0xD0,0xEF,0xAA,0xFB,0x43,0x4D,0x33,0x85,0x45,0xF9,0x02,0x7F,0x50,0x3C,0x9F,0xA8,
+   0x51,0xA3,0x40,0x8F,0x92,0x9D,0x38,0xF5,0xBC,0xB6,0xDA,0x21,0x10,0xFF,0xF3,0xD2,
+   0xCD,0x0C,0x13,0xEC,0x5F,0x97,0x44,0x17,0xC4,0xA7,0x7E,0x3D,0x64,0x5D,0x19,0x73,
+   0x60,0x81,0x4F,0xDC,0x22,0x2A,0x90,0x88,0x46,0xEE,0xB8,0x14,0xDE,0x5E,0x0B,0xDB,
+   0xE0,0x32,0x3A,0x0A,0x49,0x06,0x24,0x5C,0xC2,0xD3,0xAC,0x62,0x91,0x95,0xE4,0x79,
+   0xE7,0xC8,0x37,0x6D,0x8D,0xD5,0x4E,0xA9,0x6C,0x56,0xF4,0xEA,0x65,0x7A,0xAE,0x08,
+   0xBA,0x78,0x25,0x2E,0x1C,0xA6,0xB4,0xC6,0xE8,0xDD,0x74,0x1F,0x4B,0xBD,0x8B,0x8A,
+   0x70,0x3E,0xB5,0x66,0x48,0x03,0xF6,0x0E,0x61,0x35,0x57,0xB9,0x86,0xC1,0x1D,0x9E,
+   0xE1,0xF8,0x98,0x11,0x69,0xD9,0x8E,0x94,0x9B,0x1E,0x87,0xE9,0xCE,0x55,0x28,0xDF,
+   0x8C,0xA1,0x89,0x0D,0xBF,0xE6,0x42,0x68,0x41,0x99,0x2D,0x0F,0xB0,0x54,0xBB,0x16
+};
+
+
+const unsigned char invsbox[16*16] = {	//declare static
+   0x52,0x09,0x6A,0xD5,0x30,0x36,0xA5,0x38,0xBF,0x40,0xA3,0x9E,0x81,0xF3,0xD7,0xFB,
+   0x7C,0xE3,0x39,0x82,0x9B,0x2F,0xFF,0x87,0x34,0x8E,0x43,0x44,0xC4,0xDE,0xE9,0xCB,
+   0x54,0x7B,0x94,0x32,0xA6,0xC2,0x23,0x3D,0xEE,0x4C,0x95,0x0B,0x42,0xFA,0xC3,0x4E,
+   0x08,0x2E,0xA1,0x66,0x28,0xD9,0x24,0xB2,0x76,0x5B,0xA2,0x49,0x6D,0x8B,0xD1,0x25,
+   0x72,0xF8,0xF6,0x64,0x86,0x68,0x98,0x16,0xD4,0xA4,0x5C,0xCC,0x5D,0x65,0xB6,0x92,
+   0x6C,0x70,0x48,0x50,0xFD,0xED,0xB9,0xDA,0x5E,0x15,0x46,0x57,0xA7,0x8D,0x9D,0x84,
+   0x90,0xD8,0xAB,0x00,0x8C,0xBC,0xD3,0x0A,0xF7,0xE4,0x58,0x05,0xB8,0xB3,0x45,0x06,
+   0xD0,0x2C,0x1E,0x8F,0xCA,0x3F,0x0F,0x02,0xC1,0xAF,0xBD,0x03,0x01,0x13,0x8A,0x6B,
+   0x3A,0x91,0x11,0x41,0x4F,0x67,0xDC,0xEA,0x97,0xF2,0xCF,0xCE,0xF0,0xB4,0xE6,0x73,
+   0x96,0xAC,0x74,0x22,0xE7,0xAD,0x35,0x85,0xE2,0xF9,0x37,0xE8,0x1C,0x75,0xDF,0x6E,
+   0x47,0xF1,0x1A,0x71,0x1D,0x29,0xC5,0x89,0x6F,0xB7,0x62,0x0E,0xAA,0x18,0xBE,0x1B,
+   0xFC,0x56,0x3E,0x4B,0xC6,0xD2,0x79,0x20,0x9A,0xDB,0xC0,0xFE,0x78,0xCD,0x5A,0xF4,
+   0x1F,0xDD,0xA8,0x33,0x88,0x07,0xC7,0x31,0xB1,0x12,0x10,0x59,0x27,0x80,0xEC,0x5F,
+   0x60,0x51,0x7F,0xA9,0x19,0xB5,0x4A,0x0D,0x2D,0xE5,0x7A,0x9F,0x93,0xC9,0x9C,0xEF,
+   0xA0,0xE0,0x3B,0x4D,0xAE,0x2A,0xF5,0xB0,0xC8,0xEB,0xBB,0x3C,0x83,0x53,0x99,0x61,
+   0x17,0x2B,0x04,0x7E,0xBA,0x77,0xD6,0x26,0xE1,0x69,0x14,0x63,0x55,0x21,0x0C,0x7D
+};
+
+unsigned char rcon[10] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36};
+
+typedef unsigned char state_t[4][4];
+state_t matrix;
+state_t* state = &matrix;	//declare static
+
+
+unsigned char RoundKey[176];	//declare static
+
+//Encryption key
+const unsigned char key[16] = {0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0xb7, 0xad, 0xd6, 0xaf, 0x7f, 0x67, 0x98};
+
+//initializing variable random (input to encryption using cbc mode of operation) with some arbitrary initial vector
+unsigned char random[16] = {0x6f, 0x72, 0x61, 0x63, 0x6c, 0x65, 0x2f, 0x61, 0x72, 0x63, 0x68, 0x69, 0x74, 0x65, 0x63, 0x74};
+
+void keyExpansion(void) {	//declare static
+	unsigned char i,j,k, temp[4];
+
+	for (i=0; i<4; i++) {
+		RoundKey[i*4 + 0] = key[i*4 +0];
+		RoundKey[i*4 + 1] = key[i*4 +1];
+		RoundKey[i*4 + 2] = key[i*4 +2];
+		RoundKey[i*4 + 3] = key[i*4 +3];
+	//instead of loop
+	}
+
+	for (; i<44; i++) {
+		for (j=0; j<4; j++)
+			temp[j] = RoundKey[(i-1)*4 + j];
+
+
+		if (i%4==0) {
+
+			//function rotWord()
+			{
+			k=temp[0];
+			temp[0]=temp[1];
+			temp[1]=temp[2];
+			temp[2]=temp[3];
+			temp[3]=k;
+			//instead of loop
+			}
+
+			//function subWord()
+			{
+			temp[0] = sbox[temp[0]];
+			temp[1] = sbox[temp[1]];
+			temp[2] = sbox[temp[2]];
+			temp[3] = sbox[temp[3]];
+			//instead of loop
+			}
+
+
+			temp[0] = temp[0] ^ rcon[i/4 - 1];
+		}
+
+
+		{
+		RoundKey[i*4 + 0] = RoundKey[(i-4)*4 + 0] ^ temp[0];	//printf("%u,%x\t", i*4+0, RoundKey[i*4 + 0]);
+		RoundKey[i*4 + 1] = RoundKey[(i-4)*4 + 1] ^ temp[1];	//printf("%u,%x\t", i*4+1, RoundKey[i*4 + 1]);
+		RoundKey[i*4 + 2] = RoundKey[(i-4)*4 + 2] ^ temp[2];	//printf("%u,%x\t", i*4+2, RoundKey[i*4 + 2]);
+		RoundKey[i*4 + 3] = RoundKey[(i-4)*4 + 3] ^ temp[3];	//printf("%u,%x\t", i*4+3, RoundKey[i*4 + 3]);
+		//instead of loop
+		}
+		//printf("\n");
+
+	}
+}
+
+
+
+void AddRoundKey(unsigned char round) {	//declare static
+	unsigned char i,j;
+	for (i=0; i<4; i++)
+		for (j=0; j<4; j++)
+			(*state)[j][i] ^= RoundKey[round*16 + i*4 +j];
+}
+
+
+
+void InvSubBytes(void) {
+	unsigned char i,j;
+	for (i=0; i<4; i++)
+	for (j=0; j<4; j++)
+		(*state)[i][j] = invsbox[(*state)[i][j]];
+}
+
+
+
+void InvShiftRows(void) {
+	unsigned char temp;
+
+	temp=(*state)[1][0];
+	(*state)[1][0] = (*state)[1][3];
+	(*state)[1][3] = (*state)[1][2];
+	(*state)[1][2] = (*state)[1][1];
+	(*state)[1][1] = temp;
+
+	temp = (*state)[2][0];
+	(*state)[2][0] = (*state)[2][2];
+	(*state)[2][2] = temp;
+	temp = (*state)[2][1];
+	(*state)[2][1] = (*state)[2][3];
+	(*state)[2][3] = temp;
+
+	temp = (*state)[3][0];
+	(*state)[3][0] = (*state)[3][1];
+	(*state)[3][1] = (*state)[3][2];
+	(*state)[3][2] = (*state)[3][3];
+	(*state)[3][3] = temp;
+
+
+	//instead of loop
+}
+
+
+unsigned char xtime(unsigned char x)	//declare static
+{
+  return ((x<<1) ^ (((x>>7) & 1) * 0x1b));
+}
+
+
+// Multiply is used to multiply numbers in the field GF(2^8)
+unsigned char Multiply(unsigned char x, unsigned char y)	//declare static
+{
+  return (((y & 1) * x) ^
+       ((y>>1 & 1) * xtime(x)) ^
+       ((y>>2 & 1) * xtime(xtime(x))) ^
+       ((y>>3 & 1) * xtime(xtime(xtime(x)))) ^
+       ((y>>4 & 1) * xtime(xtime(xtime(xtime(x))))));
+  }
+
+
+// MixColumns function mixes the columns of the state matrix.
+// The method used to multiply may be difficult to understand for the inexperienced.
+// Please use the references to gain more information.
+void InvMixColumns(void)	//declare static
+{
+  int i;
+  unsigned char a,b,c,d;
+  for(i=0;i<4;++i)
+  { 
+    a = (*state)[0][i];
+    b = (*state)[1][i];
+    c = (*state)[2][i];
+    d = (*state)[3][i];
+
+    (*state)[0][i] = Multiply(a, 0x0e) ^ Multiply(b, 0x0b) ^ Multiply(c, 0x0d) ^ Multiply(d, 0x09);
+    (*state)[1][i] = Multiply(a, 0x09) ^ Multiply(b, 0x0e) ^ Multiply(c, 0x0b) ^ Multiply(d, 0x0d);
+    (*state)[2][i] = Multiply(a, 0x0d) ^ Multiply(b, 0x09) ^ Multiply(c, 0x0e) ^ Multiply(d, 0x0b);
+    (*state)[3][i] = Multiply(a, 0x0b) ^ Multiply(b, 0x0d) ^ Multiply(c, 0x09) ^ Multiply(d, 0x0e);
+  }
+}
+
+
+
+
+void decrypt(void) {
+	unsigned char round;
+
+	AddRoundKey(10);
+
+	for (round=9; round>0; round--) {
+		InvShiftRows();
+		InvSubBytes();
+		AddRoundKey(round);
+		InvMixColumns();
+	}
+
+	InvShiftRows();
+	InvSubBytes();
+	AddRoundKey(0);
+}
+
+
+
+
 int main(void) {
     unsigned char i, j;
-    unsigned char T8,datalength=13;
-    unsigned char datapkt[datalength];
 
     // Power ON delay
     __delay_ms(100);
 
     // Initialization of NodeType - should be done first
-    if (NODE_TYPE == MEDIATOR) {
+    if (NODE_TYPE == BASESTATION) {
         NumNodes = 0;
         for (i = 0; i < MAX_NODES_PER_PAN; i++) {
             for (j = 0; j < 8; j++) {
                 MacACLEntryDescriptorSet[i].ACLExtendedAddress[j] = 0;
             }
             MacACLEntryDescriptorSet[i].ACLShortAddress = 0;
-            MacACLEntryDescriptorSet[i].ACLPANID = 0;
+              MacACLEntryDescriptorSet[i].ACLPANID = 0;
         }
     }
 
@@ -1247,7 +1464,7 @@ int main(void) {
     IEC1bits.CNIE = 1; // enable Change Notification interrupts in general
 
     // welcome message
-   /* i = 0;
+    i = 0;
     U1TxBuf[i++] = 'W';
     U1TxBuf[i++] = 'e';
     U1TxBuf[i++] = 'l';
@@ -1261,7 +1478,7 @@ int main(void) {
     U1TxBuf[i++] = ' ';
     U1TxBuf[i++] = 'P';
     U1TxBuf[i++] = 'A';
-    U1TxBuf[i++] = 'N';
+    U1TxBuf[i++] = 'p';
     U1TxBuf[i++] = ' ';
     BinToAscii(MAC_PANID_VALUE, (unsigned char *) &U1TxBuf[i], 4, 0);
     i += 4;
@@ -1271,9 +1488,10 @@ int main(void) {
     U1TxBufIndex = 0;
     U1Tx();
     while (U1TxCompleted == 0); // wait for transmission of welcome message
-*/
+    
+
     while (1) {
-        
+        // Basestation waits for packets from nodes
         if (PhyPktReceived == 1) {
             PhyPktReceived = 0;
             GREENLED = 1;
@@ -1285,83 +1503,191 @@ int main(void) {
             // Read RXFIFO - MHR, MSDU, FCS, LQI, RSSI
             for (j = 0; j < PsduLength + 2; j++)
                 Psdu[j] = MRF24J40_ReadLongRAMAddr(RX_FIFO_BASE_ADDR + 1 + j);
-            /*datapkt[0]=Psdu[9];
-            datapkt[1]=Psdu[10];
-            datapkt[2]=Psdu[11];
-            datapkt[3]=Psdu[12];
-            datapkt[4]=Psdu[13];
-            datapkt[5]=Psdu[14];
-            datapkt[6]=Psdu[15];
-            datapkt[7]=Psdu[17];
-            datapkt[8]=Psdu[16];
-            datapkt[9]=Psdu[19];
-            datapkt[10]=Psdu[18];
-            datapkt[11]=Psdu[21];
-            datapkt[12]=Psdu[20];*/
-            for(j =0;j<datalength;j++)
-                datapkt[j]=Psdu[j+9];
-            
             // Clear RXDECINV = 0; enable receiving packets.
             MRF24J40_WriteShortRAMAddr(BBREG1, 0x00);
             
-
-            // Send out the received packet (selected information only) on the UART1
-          /*  i = 0;
-            BinToAscii(Psdu[11], &U1TxBuf[i], 2, 0);
+            
+            
+            
+            //my naive attempt to display the encrypted data (ie. before decryption algorithm)
+            i = 0;
+            BinToAscii(Psdu[11], &U1TxBuf[i], 2, 01);
             i += 2; // NodeType MSByte
-            BinToAscii(Psdu[10], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[10], &U1TxBuf[i], 2, 01);
             i += 2;
             U1TxBuf[i++] = ' '; // NodeType LSByte
-            BinToAscii(Psdu[8], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[8], &U1TxBuf[i], 2, 01);
             i += 2; // NodeID MSByte
-            BinToAscii(Psdu[7], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[7], &U1TxBuf[i], 2, 01);
             i += 2;
             U1TxBuf[i++] = ' '; // NodeID LSByte
-            BinToAscii(Psdu[2], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[2], &U1TxBuf[i], 2, 01);
             i += 2;
             U1TxBuf[i++] = ' '; // Sequence Number
-            BinToAscii(Psdu[9], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[9], &U1TxBuf[i], 2, 01);
             i += 2;
             U1TxBuf[i++] = ' '; // Node Status
-            BinToAscii(Psdu[12], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[12], &U1TxBuf[i], 2, 01);
             i += 2;
             U1TxBuf[i++] = ' '; // Packet Type
-            BinToAscii(Psdu[14], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[14], &U1TxBuf[i], 2, 01);
             i += 2; // Battery Voltage MSByte
-            BinToAscii(Psdu[13], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[13], &U1TxBuf[i], 2, 1);
             i += 2;
             U1TxBuf[i++] = ' '; // Battery Voltage LSByte
             BinToAscii(Psdu[15], &U1TxBuf[i], 2, 0);
             i += 2;
             U1TxBuf[i++] = ' '; // Temperature
-            BinToAscii(Psdu[17], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[17], &U1TxBuf[i], 2, 1);
             i += 2; // AccX LSByte
-            BinToAscii(Psdu[16], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[16], &U1TxBuf[i], 2, 01);
             i += 2;
             U1TxBuf[i++] = ' '; // AccX MSByte
-            BinToAscii(Psdu[19], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[19], &U1TxBuf[i], 2, 01);
             i += 2; // AccY LSByte
-            BinToAscii(Psdu[18], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[18], &U1TxBuf[i], 2, 01);
             i += 2;
             U1TxBuf[i++] = ' '; // AccY MSByte
-            BinToAscii(Psdu[21], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[21], &U1TxBuf[i], 2, 01);
             i += 2; // AccZ LSByte
-            BinToAscii(Psdu[20], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[20], &U1TxBuf[i], 2, 01);
             i += 2;
             U1TxBuf[i++] = ' '; // AccZ MSByte
-            BinToAscii(Psdu[24], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[24], &U1TxBuf[i], 2, 01);
             i += 2;
             U1TxBuf[i++] = ' '; // LQI
-            BinToAscii(Psdu[25], &U1TxBuf[i], 2, 0);
+            BinToAscii(Psdu[25], &U1TxBuf[i], 2, 01);
             i += 2;
-            U1TxBuf[i++] = ' '; // RSSI (see table 3-8 in MRF24J40 datasheet)
+            U1TxBuf[i++] = ' ';// RSSI (see table 3-8 in MRF24J40 datasheet)
+            BinToAscii(Psdu[22], &U1TxBuf[i], 2, 01);
+            i += 2;
+            BinToAscii(Psdu[23], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' ';
             U1TxBuf[i++] = '\n';
             U1TxBuf[i++] = '\r';
             U1TxBufIndex = 0;
             U1TxBufLen = i;
             U1Tx();
+            while (U1TxCompleted == 0);
+            //end of the attempt
+            
+            
+            
+            
+            //AES decryption algorithm     
+            keyExpansion();
+            
+            unsigned char a, b, c;
+            
+            /*
+            unsigned char random_for_round[16];
+            
+            for (a=0; a<16; a++)
+              //  random_for_round[a] = random[a];
+            
+            //random for the next round
+            //for (a=0, c=9; a<16; a++, c++)
+              //  random[a] = Psdu[c];
+            */
+            
+            
+            c=9;
+            
+            for (b=0; b<4; b++) {
+                for (a=0; a<4; a++)
+                    (*state)[a][b] = Psdu[c++];
+            }
+                                
+            
+            decrypt();
+            
+            c=9;
+            
+            for (b=0; b<4; b++) {
+                for (a=0; a<4; a++)
+                        Psdu[c++] = (*state)[a][b];
+            }
+            
+            
+            /*
+            for (a=0, c=9; a<16; a++, c++)
+                Psdu[c] ^= random_for_round[a];
+            */
+            //end of AES algorithm
+                    
+
+            // Send out the received packet (selected information only) on the UART1
+            i = 0;
+            BinToAscii(Psdu[11], &U1TxBuf[i], 2, 01);
+            i += 2; // NodeType MSByte
+            BinToAscii(Psdu[10], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' '; // NodeType LSByte
+            BinToAscii(Psdu[8], &U1TxBuf[i], 2, 01);
+            i += 2; // NodeID MSByte
+            BinToAscii(Psdu[7], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' '; // NodeID LSByte
+            BinToAscii(Psdu[2], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' '; // Sequence Number
+            BinToAscii(Psdu[9], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' '; // Node Status
+            BinToAscii(Psdu[12], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' '; // Packet Type
+            BinToAscii(Psdu[14], &U1TxBuf[i], 2, 01);
+            i += 2; // Battery Voltage MSByte
+            BinToAscii(Psdu[13], &U1TxBuf[i], 2, 1);
+            i += 2;
+            U1TxBuf[i++] = ' '; // Battery Voltage LSByte
+            BinToAscii(Psdu[15], &U1TxBuf[i], 2, 0);
+            i += 2;
+            U1TxBuf[i++] = ' '; // Temperature
+            BinToAscii(Psdu[17], &U1TxBuf[i], 2, 1);
+            i += 2; // AccX LSByte
+            BinToAscii(Psdu[16], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' '; // AccX MSByte
+            BinToAscii(Psdu[19], &U1TxBuf[i], 2, 01);
+            i += 2; // AccY LSByte
+            BinToAscii(Psdu[18], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' '; // AccY MSByte
+            BinToAscii(Psdu[21], &U1TxBuf[i], 2, 01);
+            i += 2; // AccZ LSByte
+            BinToAscii(Psdu[20], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' '; // AccZ MSByte
+            BinToAscii(Psdu[24], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' '; // LQI
+            BinToAscii(Psdu[25], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' ';// RSSI (see table 3-8 in MRF24J40 datasheet)
+            BinToAscii(Psdu[22], &U1TxBuf[i], 2, 01);
+            i += 2;
+            BinToAscii(Psdu[23], &U1TxBuf[i], 2, 01);
+            i += 2;
+            U1TxBuf[i++] = ' ';
+            U1TxBuf[i++] = '\n';
+            
+            //my naive attempt to organize the data
+            
+            U1TxBuf[i++] = '\n';
+            U1TxBuf[i++] = '\n';
+            U1TxBuf[i++] = '\n';
+            //end of modification (the three lines above) to original code
+            
+            
+            U1TxBuf[i++] = '\r';
+            U1TxBufIndex = 0;
+            U1TxBufLen = i;
+            U1Tx();
             while (U1TxCompleted == 0); // wait for transmission of welcome message
-*/
+
             // If a DATA frame has been received
             if ((Psdu[0] & 0x07) == MAC_FC_DATA_FRAME) {
             }// END of DATA frame processing
@@ -1377,12 +1703,8 @@ int main(void) {
                         MLME_ASSOCIATE_RESPONSE();
                 }
             } // END of COMMAND frame processing
-            __delay_ms(500);
-           
             GREENLED = 0;
-            T8 = MCPS_DATA_REQUEST(MAC_ADDR_MODE_SHORT, MacPANID, (unsigned char *) &MacShortAddress, MAC_ADDR_MODE_SHORT, MacPANID, (unsigned char *) &MacCoordShortAddress, datalength, &datapkt[0], 1, 0x1);
         }
-         
     }
     return 0;
 }
@@ -1390,7 +1712,7 @@ int main(void) {
 /* This function converts the binary value passed to it into an ASCII string which it stores at the array pointed to by Buf.
    If DecHex is 1, it converts into Decimal string, else Hexadecimal string.  It converts to NumChars significant digits.
  */
-/*void BinToAscii(unsigned int Binary, unsigned char *Buf, unsigned char NumChars, unsigned char DecHex) {
+void BinToAscii(unsigned int Binary, unsigned char *Buf, unsigned char NumChars, unsigned char DecHex) {
     if (DecHex) {
         switch (NumChars) {
             case 4:
@@ -1432,4 +1754,4 @@ int main(void) {
                 break;
         }
     }
-}  End of BinToAscii() */
+} /* End of BinToAscii() */

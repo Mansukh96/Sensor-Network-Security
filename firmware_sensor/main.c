@@ -787,24 +787,24 @@ void MRF24J40_HardwareReset(void) {
 }
 
 /*
-1. SOFTRST (0x2A) = 0x07 – Perform a software Reset. The bits will be automatically cleared to ‘0’ by hardware.
-2. PACON2 (0x18) = 0x98 – Initialize FIFOEN = 1 and TXONTS = 0x6.
-3. TXSTBL (0x2E) = 0x95 – Initialize RFSTBL = 0x9.
-4. RFCON0 (0x200) = 0x03 – Initialize RFOPT = 0x03.
-5. RFCON1 (0x201) = 0x01 – Initialize VCOOPT = 0x02.
-6. RFCON2 (0x202) = 0x80 – Enable PLL (PLLEN = 1).
-7. RFCON6 (0x206) = 0x90 – Initialize TXFIL = 1 and 20MRECVR = 1.
-8. RFCON7 (0x207) = 0x80 – Initialize SLPCLKSEL = 0x2 (100 kHz Internal oscillator).
-9. RFCON8 (0x208) = 0x10 – Initialize RFVCO = 1.
-10. SLPCON1 (0x220) = 0x21 – Initialize CLKOUTEN = 1 and SLPCLKDIV = 0x01.
-Configuration for nonbeacon-enabled devices (see Section 3.8 “Beacon-Enabled and Nonbeacon-Enabled Networks”):
-11. BBREG2 (0x3A) = 0x80 – Set CCA mode to ED.
-12. CCAEDTH = PHY_CCA_ED_THRESHOLD – Set CCA ED threshold.
-13. BBREG6 (0x3E) = 0x40 – Set appended RSSI value to RXFIFO.
-14. Enable interrupts – See Section 3.3 “Interrupts”.
-15. Set channel – See Section 3.4 “Channel Selection”.
-16. Set transmitter power - See “REGISTER 2-62: RF CONTROL 3 REGISTER (ADDRESS: 0x203)”.
-17. RFCTL (0x36) = 0x04 – Reset RF state machine.
+1. SOFTRST (0x2A) = 0x07 ? Perform a software Reset. The bits will be automatically cleared to ?0? by hardware.
+2. PACON2 (0x18) = 0x98 ? Initialize FIFOEN = 1 and TXONTS = 0x6.
+3. TXSTBL (0x2E) = 0x95 ? Initialize RFSTBL = 0x9.
+4. RFCON0 (0x200) = 0x03 ? Initialize RFOPT = 0x03.
+5. RFCON1 (0x201) = 0x01 ? Initialize VCOOPT = 0x02.
+6. RFCON2 (0x202) = 0x80 ? Enable PLL (PLLEN = 1).
+7. RFCON6 (0x206) = 0x90 ? Initialize TXFIL = 1 and 20MRECVR = 1.
+8. RFCON7 (0x207) = 0x80 ? Initialize SLPCLKSEL = 0x2 (100 kHz Internal oscillator).
+9. RFCON8 (0x208) = 0x10 ? Initialize RFVCO = 1.
+10. SLPCON1 (0x220) = 0x21 ? Initialize CLKOUTEN = 1 and SLPCLKDIV = 0x01.
+Configuration for nonbeacon-enabled devices (see Section 3.8 ?Beacon-Enabled and Nonbeacon-Enabled Networks?):
+11. BBREG2 (0x3A) = 0x80 ? Set CCA mode to ED.
+12. CCAEDTH = PHY_CCA_ED_THRESHOLD ? Set CCA ED threshold.
+13. BBREG6 (0x3E) = 0x40 ? Set appended RSSI value to RXFIFO.
+14. Enable interrupts ? See Section 3.3 ?Interrupts?.
+15. Set channel ? See Section 3.4 ?Channel Selection?.
+16. Set transmitter power - See ?REGISTER 2-62: RF CONTROL 3 REGISTER (ADDRESS: 0x203)?.
+17. RFCTL (0x36) = 0x04 ? Reset RF state machine.
 18. RFCTL (0x36) = 0x00.
 19. Delay at least 192 µs.
  */
@@ -854,9 +854,9 @@ void MRF24J40_Configure_NonBeaconNetwork(void) {
 
 /* This function puts the MRF24J40MA module in sleep mode */
 void MRF24J40_GoToSleep(void) {
-    MRF24J40_WriteShortRAMAddr(SOFTRST, 0x04); // SOFTRST (0x2A) = 0x04 – Perform a Power Management Reset
+    MRF24J40_WriteShortRAMAddr(SOFTRST, 0x04); // SOFTRST (0x2A) = 0x04 ? Perform a Power Management Reset
     MRF24J40_WriteShortRAMAddr(WAKECON, 0x80); // Enable Immediate Wake mode operations by setting IMMWAKE (WAKECON 0x22<7> bit)
-    MRF24J40_WriteShortRAMAddr(SLPACK, 0x80); // SLPACK (0x35) = 0x80 – Put MRF24J40 to Sleep immediately
+    MRF24J40_WriteShortRAMAddr(SLPACK, 0x80); // SLPACK (0x35) = 0x80 ? Put MRF24J40 to Sleep immediately
 }
 
 void MRF24J40_ExitSleep1(void) {
@@ -1409,8 +1409,205 @@ void AcquireData(void) {
     FXLS8471Write(FXLS8471Q_CTRL_REG1, 0x00); // Put FXLS8471 into Standby state
 }
 
-// This function reads sensors and forms the Data packet which is sent periodically to the base station. This includes BatteryVoltage and Temperature.
+//AES functions
+const unsigned char sbox[16*16] = {	//declare static
+   0x63,0x7C,0x77,0x7B,0xF2,0x6B,0x6F,0xC5,0x30,0x01,0x67,0x2B,0xFE,0xD7,0xAB,0x76,
+   0xCA,0x82,0xC9,0x7D,0xFA,0x59,0x47,0xF0,0xAD,0xD4,0xA2,0xAF,0x9C,0xA4,0x72,0xC0,
+   0xB7,0xFD,0x93,0x26,0x36,0x3F,0xF7,0xCC,0x34,0xA5,0xE5,0xF1,0x71,0xD8,0x31,0x15,
+   0x04,0xC7,0x23,0xC3,0x18,0x96,0x05,0x9A,0x07,0x12,0x80,0xE2,0xEB,0x27,0xB2,0x75,
+   0x09,0x83,0x2C,0x1A,0x1B,0x6E,0x5A,0xA0,0x52,0x3B,0xD6,0xB3,0x29,0xE3,0x2F,0x84,
+   0x53,0xD1,0x00,0xED,0x20,0xFC,0xB1,0x5B,0x6A,0xCB,0xBE,0x39,0x4A,0x4C,0x58,0xCF,
+   0xD0,0xEF,0xAA,0xFB,0x43,0x4D,0x33,0x85,0x45,0xF9,0x02,0x7F,0x50,0x3C,0x9F,0xA8,
+   0x51,0xA3,0x40,0x8F,0x92,0x9D,0x38,0xF5,0xBC,0xB6,0xDA,0x21,0x10,0xFF,0xF3,0xD2,
+   0xCD,0x0C,0x13,0xEC,0x5F,0x97,0x44,0x17,0xC4,0xA7,0x7E,0x3D,0x64,0x5D,0x19,0x73,
+   0x60,0x81,0x4F,0xDC,0x22,0x2A,0x90,0x88,0x46,0xEE,0xB8,0x14,0xDE,0x5E,0x0B,0xDB,
+   0xE0,0x32,0x3A,0x0A,0x49,0x06,0x24,0x5C,0xC2,0xD3,0xAC,0x62,0x91,0x95,0xE4,0x79,
+   0xE7,0xC8,0x37,0x6D,0x8D,0xD5,0x4E,0xA9,0x6C,0x56,0xF4,0xEA,0x65,0x7A,0xAE,0x08,
+   0xBA,0x78,0x25,0x2E,0x1C,0xA6,0xB4,0xC6,0xE8,0xDD,0x74,0x1F,0x4B,0xBD,0x8B,0x8A,
+   0x70,0x3E,0xB5,0x66,0x48,0x03,0xF6,0x0E,0x61,0x35,0x57,0xB9,0x86,0xC1,0x1D,0x9E,
+   0xE1,0xF8,0x98,0x11,0x69,0xD9,0x8E,0x94,0x9B,0x1E,0x87,0xE9,0xCE,0x55,0x28,0xDF,
+   0x8C,0xA1,0x89,0x0D,0xBF,0xE6,0x42,0x68,0x41,0x99,0x2D,0x0F,0xB0,0x54,0xBB,0x16
+};
 
+unsigned char rcon[10] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36};
+
+typedef unsigned char state_t[4][4];
+state_t matrix;
+state_t* state = &matrix;	//declare static
+
+
+unsigned char RoundKey[176];	//declare static
+
+//encryption key (hardcoded for now)
+const unsigned char key[16] = {0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0xb7, 0xad, 0xd6, 0xaf, 0x7f, 0x67, 0x98};
+
+void keyExpansion(void) {	//declare static
+	unsigned char i,j,k, temp[4];
+
+	for (i=0; i<4; i++) {
+		RoundKey[i*4 + 0] = key[i*4 +0];
+		RoundKey[i*4 + 1] = key[i*4 +1];
+		RoundKey[i*4 + 2] = key[i*4 +2];
+		RoundKey[i*4 + 3] = key[i*4 +3];
+	//instead of loop
+	}
+
+	for (; i<44; i++) {
+		for (j=0; j<4; j++)
+			temp[j] = RoundKey[(i-1)*4 + j];
+
+
+		if (i%4==0) {
+
+			//function rotWord()
+			{
+			k=temp[0];
+			temp[0]=temp[1];
+			temp[1]=temp[2];
+			temp[2]=temp[3];
+			temp[3]=k;
+			//instead of loop
+			}
+
+			//function subWord()
+			{
+			temp[0] = sbox[temp[0]];
+			temp[1] = sbox[temp[1]];
+			temp[2] = sbox[temp[2]];
+			temp[3] = sbox[temp[3]];
+			//instead of loop
+			}
+
+
+			temp[0] = temp[0] ^ rcon[i/4 - 1];
+		}
+
+
+		{
+		RoundKey[i*4 + 0] = RoundKey[(i-4)*4 + 0] ^ temp[0];	//printf("%u,%x\t", i*4+0, RoundKey[i*4 + 0]);
+		RoundKey[i*4 + 1] = RoundKey[(i-4)*4 + 1] ^ temp[1];	//printf("%u,%x\t", i*4+1, RoundKey[i*4 + 1]);
+		RoundKey[i*4 + 2] = RoundKey[(i-4)*4 + 2] ^ temp[2];	//printf("%u,%x\t", i*4+2, RoundKey[i*4 + 2]);
+		RoundKey[i*4 + 3] = RoundKey[(i-4)*4 + 3] ^ temp[3];	//printf("%u,%x\t", i*4+3, RoundKey[i*4 + 3]);
+		//instead of loop
+		}
+		//printf("\n");
+
+	}
+}
+
+
+
+void AddRoundKey(unsigned char round) {	//declare static
+	unsigned char i,j;
+	for (i=0; i<4; i++)
+		for (j=0; j<4; j++)
+			(*state)[j][i] ^= RoundKey[round*16 + i*4 +j];
+}
+
+
+void SubBytes(void) {		//declare static
+	unsigned char i,j;
+	for (i=0; i<4; i++)
+	for (j=0; j<4; j++)
+		(*state)[i][j] = sbox[(*state)[i][j]];
+}
+
+
+
+void ShiftRows(void) {	//declare static
+	unsigned char temp;
+
+	temp = (*state)[1][0];
+	(*state)[1][0] = (*state)[1][1];
+	(*state)[1][1] = (*state)[1][2];
+	(*state)[1][2] = (*state)[1][3];
+	(*state)[1][3] = temp;
+
+	temp = (*state)[2][0];
+	(*state)[2][0] = (*state)[2][2];
+	(*state)[2][2] = temp;
+	temp = (*state)[2][1];
+	(*state)[2][1] = (*state)[2][3];
+	(*state)[2][3] = temp;
+
+	temp = (*state)[3][0];
+	(*state)[3][0] = (*state)[3][3];
+	(*state)[3][3] = (*state)[3][2];
+	(*state)[3][2] = (*state)[3][1];
+	(*state)[3][1] = temp;
+
+	//instead of following loop
+	/*
+	unsigned char i, j, temp, repeat;
+	for (i=1; i<4; i++) {
+		for (repeat=0; repeat<i; repeat++) {
+			temp = state[i][0];
+			for (j=0; j<4; j++)
+				state[i][j] = state[i][j+1];
+			state[i][3] = temp;
+		}
+	}
+	*/
+}
+
+
+
+unsigned char xtime(unsigned char x)	//declare static
+{
+  return ((x<<1) ^ (((x>>7) & 1) * 0x1b));
+}
+
+// MixColumns function mixes the columns of the state matrix
+void MixColumns(void)	//declare static
+{
+  unsigned char i;
+  unsigned char Tmp,Tm,t;
+  for(i = 0; i < 4; ++i)
+  {  
+    t   = (*state)[0][i];
+    Tmp = (*state)[0][i] ^ (*state)[1][i] ^ (*state)[2][i] ^ (*state)[3][i] ;
+    Tm  = (*state)[0][i] ^ (*state)[1][i] ; Tm = xtime(Tm);  (*state)[0][i] ^= Tm ^ Tmp ;
+    Tm  = (*state)[1][i] ^ (*state)[2][i] ; Tm = xtime(Tm);  (*state)[1][i] ^= Tm ^ Tmp ;
+    Tm  = (*state)[2][i] ^ (*state)[3][i] ; Tm = xtime(Tm);  (*state)[2][i] ^= Tm ^ Tmp ;
+    Tm  = (*state)[3][i] ^ t ;        Tm = xtime(Tm);  (*state)[3][i] ^= Tm ^ Tmp ;
+  }
+}
+
+
+void encrypt(void) {
+	unsigned char round=0;
+
+	//printf("KEY\n");
+	//DisplayRoundKey(round);
+	AddRoundKey(0);
+	//printf("state after first AddRoundKey operation\n");
+	//DisplayState();
+
+	for (round=1; round<10; round++) {
+		//printf("RoundKey for round %u\n", round);
+		//DisplayRoundKey(round);
+		SubBytes();
+		//printf("State after round %u SubByte operation\n", round);
+		//DisplayState();
+		ShiftRows();
+		//printf("State after round %u ShiftRows operation\n", round);
+		//DisplayState();
+		MixColumns();
+		//printf("State after round %u MixColumn operation\n", round);
+		//DisplayState();
+		AddRoundKey(round);
+	}
+
+	SubBytes();
+	ShiftRows();
+	AddRoundKey(10);
+
+}
+//end of AES functions
+
+
+
+// This function reads sensors and forms the Data packet which is sent periodically to the base station. This includes BatteryVoltage and Temperature.
 void FormPeriodicDataPkt(void) {
     unsigned char i;
 
@@ -1421,14 +1618,41 @@ void FormPeriodicDataPkt(void) {
     Msdu[i++] = PERIODIC_DATA_PKT;
     Msdu[i++] = BatteryVoltage;
     Msdu[i++] = BatteryVoltage >> 8;
-    Msdu[i++] = Temperature;
+    Msdu[i++] = 0x20;//Temperature;
     Msdu[i++] = AccRawData.x;
     Msdu[i++] = AccRawData.x >> 8;
     Msdu[i++] = AccRawData.y;
     Msdu[i++] = AccRawData.y >> 8;
     Msdu[i++] = AccRawData.z;
     Msdu[i++] = AccRawData.z >> 8;
+    Msdu[i++] = 0;  //my_courtesy
+    Msdu[i++] = 0;  //my_courtesy
+    Msdu[i++] = 0;  //my_courtesy
     MsduLength = i;
+    
+    
+    //code to execute AES encryption on Msdu
+    
+    keyExpansion();
+    
+    unsigned char a, b, c=0;
+    
+    //copying the plaintext ie. Msdu to the state matrix
+    for (b=0; b<4; b++) {
+		for (a=0; a<4; a++)
+			(*state)[a][b] = Msdu[c++];
+	}
+    
+    
+    encrypt();
+    
+    //copying the state matrix to the variable Msdu
+    c=0;
+    for (b=0; b<4; b++) {
+        for (a=0; a<4; a++)
+            Msdu[c++] = (*state)[a][b];
+    }
+    
 }
 
 int main(void) {
@@ -1501,4 +1725,3 @@ int main(void) {
     }
     return 0;
 }
-
