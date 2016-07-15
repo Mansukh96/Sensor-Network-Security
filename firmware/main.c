@@ -1,4 +1,4 @@
-// This file contains main function for base station in non beacon mode
+// This file contains main function for sensor in non beacon mode
 //#include <stdio.h>
 #include <stdlib.h>
 #include "board.h"
@@ -7,6 +7,7 @@
 #include "ieee802154.h"
 #include "config.h"
 #include <libpic30.h>
+#include <xc.h>
 #include "p24FJ256GA106.h"
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -25,16 +26,6 @@
 // GLOBAL VARIABLES
 // HARDWARE
 int CurrentCPUIPL; // this variable is used for saving current IPL level
-unsigned int BatteryVoltage; // Binary representation of Battery Voltagein millivolt
-unsigned char Temperature; // Binary representation of temperature
-unsigned char Timer1IntOccurred;
-
-unsigned char U1TxBuf[256];
-unsigned char U1TxBufLen;
-unsigned char U1TxBufIndex;
-unsigned char U1RxBuf[256];
-unsigned char U1RxBufIndex; // Index in U1RxBuf into which next received character will be written into by the RxISR
-unsigned char U1TxCompleted;
 
 // PHY LAYER
 // PHY PIB attributes
@@ -51,14 +42,14 @@ volatile unsigned char PhyPktReceived;
 volatile unsigned char TxCompleted;
 
 // MAC LAYER
+unsigned char MacConnectedToPAN; // = 1 if connected in a PAN, else 0
 unsigned int MacPANID; // PAN ID 
-unsigned char EUID48[6]; // read from Microchip 11AA02E48 IC, LSByte in EUID48[0]
+unsigned char EUID48[6]; // this is filled by reading from Microchip 11AA02E48 IC, MSByte in EUID48[0]
 unsigned char MacExtendedAddress[8]; // formed from EUID48 to get unique IEEE address, LSByte in MacExtendedAddress[0]
-unsigned int MacShortAddress;
+unsigned int MacShortAddress; // Short address of the sensor
 unsigned char MacCoordExtendedAddress[8]; // IEEE 64 bit address of co-ordinator
-unsigned int MacCoordShortAddress;
+unsigned int MacCoordShortAddress; // Short address of the co-ordinator, which is always 0
 unsigned char MacDSN; // Sequence number to be added to the transmitted data/MAC command frame
-ACLEntry MacACLEntryDescriptorSet[MAX_NODES_PER_PAN];
 unsigned char MacHeaderLength;
 unsigned char MacFrameLength;
 unsigned char Msdu[aMaxMACFrameSize];
@@ -67,7 +58,14 @@ unsigned char MsduLength;
 // NWK LAYER
 
 // APPLICATION
-unsigned char NumNodes;
+unsigned char PeriodicIntOccurred;
+unsigned char DoubleTapIntOccurred;
+unsigned int Duration; // to keep count of elapsed duration in seconds 
+unsigned int BatteryVoltage; // Binary representation of Battery Voltage in millivolts
+unsigned char Temperature; // Binary representation of temperature in degree celcius
+unsigned char NodeStatus; // Bit 7 : ACCelerometer OK.  
+unsigned char Timer1IntOccurred;
+SRAWDATA AccRawData;
 ////////////////////////////////////////////////////////////////////////////////
 // Function Prototypes
 unsigned char MRF24J40_ReadShortRAMAddr(unsigned char Addr);
@@ -76,17 +74,19 @@ void MRF24J40_GoToSleep(void);
 void MRF24J40_SetChannel(unsigned char Channel);
 unsigned char MRF24J40_ReadLongRAMAddr(unsigned int Addr);
 void MRF24J40_HardwareReset(void);
-void BinToAscii(unsigned int Binary, unsigned char *Buf, unsigned char NumChars, unsigned char DecHex);
+void PHYInit(void);
+void MACInit(void);
+void MRF24J40_SetChannel(unsigned char Channel);
 ////////////////////////////////////////////////////////////////////////////////
 // FUNCTIONS
 // HARDWARE
 
-void EnterProtectedSection(void) {
+void EnterCriticalSection(void) {
     // enter protected section of code by the mechanism of raising IPL to 7
     SET_AND_SAVE_CPU_IPL(CurrentCPUIPL, 7);
 }
 
-void LeaveProtectedSection(void) {
+void LeaveCriticalSection(void) {
     // Leave protected code section and restore IPL
     RESTORE_CPU_IPL(CurrentCPUIPL);
 }
@@ -146,35 +146,35 @@ void RTCCInit(unsigned char Year, unsigned char Month, unsigned char Date, unsig
     // Set ALARM for every 1 second
     ALCFGRPTbits.AMASK = 1;
     ALCFGRPTbits.ALRMEN = 1;
-
+    
     // Enable RTCC ALARM interrupts
     IFS3bits.RTCIF = 0;
     IEC3bits.RTCIE = 1;
 }
 
 void BoardInit(void) {
-    // Pin selection for peripherals.
+    // ACCRST Line to be turned to output
+    ACCRST_DIR = 0;
+    ACCRST = 0;
+
+    // Pin selection for peripherals. Enablement of SOSC 32.768 KHz oscillator
     // SPI1 pin selection
     __builtin_write_OSCCONL(0x00); // Unlock IOLOCK
     RPINR20bits.SDI1R = 22; // SDI1 is assigned to RP22
     RPOR12bits.RP25R = 7; // SDO1 is assigned to RP25
     RPOR10bits.RP20R = 8; // SCK1 is assigned to RP20
-    RPINR18bits.U1RXR = 23; // UART1 RX is assigned to RP23
-    RPOR12bits.RP24R = 3; // UART1 TX is assigned to RP24
     __builtin_write_OSCCONL(0x42); // Lock IOLOCK. Enable SOSC 32.768 KHz oscillator
 
-    // Make all unused Port lines as digital outputs and turn them LOW
+    // Make all unused Port lines as digital outputs and turn them LOW to save power
     AD1PCFGL = 0xffbf; // First turn all default Analog pins to digital except RB6/AN6 which is used for TEMPERATURE. Leave RB4 and RB5 untouched since they are programming pins
     TRISB &= 0x0070; // Turn unused port lines as Digital outputs
-    TRISD &= 0xf0fe;
-    TRISE &= 0xfff0;
+    TRISD &= 0xf0f8;
     TRISF &= 0xff83;
     TRISG &= 0xfc73;
 
     // Turn unused port lines LOW
     LATB &= 0x0070;
-    LATD &= 0xf0fe;
-    LATE &= 0xfff0;
+    LATD &= 0xf0f8;
     LATF &= 0xff83;
     LATG &= 0xfc73;
 
@@ -188,10 +188,12 @@ void BoardInit(void) {
 
     //Deselect CS lines to both FXLS8471 and MRF24J40MA . Initialize SPI1
     RFCS_DIR = 0;
+    ACCCS_DIR = 0;
     RFCS = 1;
+    ACCCS = 1;
     SPI1Init();
 
-    // Timer1 init for system tick
+    // Initialize Timer1 to run on SOSC, 32.768KHz.  Set it for generating interrupt every second
     T1CONbits.TCS = 1;
     TMR1 = 0;
     PR1 = 32768;
@@ -199,21 +201,11 @@ void BoardInit(void) {
     IFS0bits.T1IF = 0;
     IEC0bits.T1IE = 1;
 
-    // UART1 init. 38400 baud rate
-    U1RxBufIndex = 0;
-    U1BRG = 25; // Baud rate = FCY/16 divided by U1BRG
-    U1STAbits.UTXISEL0 = 1; // Tx Interrupt AFTER char is transmitted; Rx interrupt on receipt of character
-    IFS0bits.U1RXIF = 0; // Clear UART1 RX interrupt flag
-    IFS0bits.U1TXIF = 0; // Clear UART1 TX interrupt flag
-    IEC0bits.U1RXIE = 1; // enable UART1 RX interrupts
-    IEC0bits.U1TXIE = 1; // enable UART1 TX interrupts
-    U1MODEbits.UARTEN = 1; // enable UART1
-
-    // Interrupt system init. Enable ACCelerator Interrupts, Timer1 and RTCC interrupts. Enable UART1 interrupts if it is Base station
+    // Interrupt system init. 
     INTCON1bits.NSTDIS = 1; // disable nested interrupts
 
-    // Disable all modules except SPI1, Timer1, UART1.  The other modules are enabled as needed during operation
-    PMD1 = 0xf7d7;
+    // Disable all modules except SPI1 and Timer1.  The other modules are enabled as needed during operation
+    PMD1 = 0xf7f7;
     PMD2 = 0xffff;
     PMD3 = 0xffff;
     PMD4 = 0xffff;
@@ -223,6 +215,7 @@ void BoardInit(void) {
     // MRF24J40MA Reset lines is made an output
     RFRST_DIR = 0;
 }
+
 
 // converts the specified ADC channel.
 // The reference for conversion is always AVDD.  Since in the battery operated application AVDD will be
@@ -276,7 +269,7 @@ unsigned char ConvertADCValToTemperature(unsigned int ADCValue) {
     unsigned long T32;
     unsigned char T8;
 
-    T32 = (ADCValue * BatteryVoltage) / 0x3ff;
+    T32 = ((unsigned long) ADCValue * (unsigned long) BatteryVoltage) / 0x3ff;
 
     T32 -= 500;
     T8 = T32 / 10;
@@ -296,16 +289,205 @@ void SetTimer1(unsigned int DurationInSymbolPeriods) {
     T1CONbits.TON = 1; // Turn ON Timer1
 }
 
-// Initiates transmission of a character sequence in U1TxBuf[128], length in U1TxBufLen
-// Should be called after filling in U1TxBuf, U1TxBufLen, U1TxBufIndex = 0.
-// The transmission is completed by the _U1TxInterrupt ISR.
+// SPI function to read from FXLS8471
 
-void U1Tx(void) {
-    U1TxCompleted = 0;
-    U1TXREG = U1TxBuf[U1TxBufIndex++];
-    U1STAbits.UTXEN = 1;
+unsigned char FXLS8471Read(unsigned char Addr) {
+    unsigned char T8;
+
+    ACCCS = 0;
+    __delay_us(1);
+    SPI1SendByte(Addr & 0x7f);
+    SPI1SendByte(Addr & 0x80);
+    T8 = SPI1ReadByte();
+    ACCCS = 1;
+    return (T8);
 }
 
+// SPI function to write into FXLS8471
+
+void FXLS8471Write(unsigned char Addr, unsigned char Dat) {
+    ACCCS = 0;
+    __delay_us(1);
+    SPI1SendByte(Addr | 0x80);
+    SPI1SendByte(Addr & 0x80);
+    SPI1SendByte(Dat);
+    ACCCS = 1;
+}
+
+// reset accelerometer
+
+void FXLS8471Reset(void) {
+    ACCCS = 1;
+    RFCS = 1;
+    __delay_ms(5);
+    ACCRST = 0;
+    __delay_ms(5);
+    ACCRST = 1;
+    __delay_ms(10);
+    ACCRST = 0;
+    __delay_ms(5);
+}
+
+// function configures FXLS8471Q accelerometer sensor
+
+unsigned int FXLS8471Init(void) {
+    unsigned char i, T8;
+
+    FXLS8471Reset();
+    i = 0;
+    do {
+        T8 = FXLS8471Read(FXLS8471Q_WHOAMI);
+    } while ((T8 != FXLS8471Q_WHOAMI_VAL) && (++i < 250));
+    if (T8 != FXLS8471Q_WHOAMI_VAL)
+        return 0;
+    else {
+        ODCEbits.ODE0 = 1; // Configure RE0 (ACCINT1) to be Open drain, since the ACCelerometer interrupt line is push-pull
+        CNEN4bits.CN58IE = 1; // enable Change Notification interrupt for ACCINT1
+
+        FXLS8471Write(FXLS8471Q_CTRL_REG1, 0x00); // put the FXLS8471 into Standby Mode first, to be able to change control register values.
+                                                  // This also selects 50Hz sampling rate in sleep mode; 800 Hz ODR in Wake state
+        FXLS8471Write(FXLS8471Q_XYZ_DATA_CFG, 0x01); // Configure for +/- 4g full scale; given that we are using 14 bit 2's complement data, we get +/- 0.488mg/LSB
+
+        T8 = FXLS8471Read(FXLS8471Q_CTRL_REG1); 
+
+        return 1;
+    }
+}
+
+// This function performs a block read of the status and acceleration data and places the bytes read into the structures of type
+// SRAWDATA as signed short integers
+
+void FXLS8471ReadAccel(SRAWDATA *Ptr) {
+    unsigned char Buffer[FXLS8471Q_READ_LEN]; // read buffer
+    unsigned char i;
+
+    for (i = 0; i < FXLS8471Q_READ_LEN; i++)
+        Buffer[i] = FXLS8471Read(FXLS8471Q_STATUS + i);
+    // copy the 14 bit accelerometer byte data into 16 bit words
+    Ptr->x = ((Buffer[1] << 8) | Buffer[2]) >> 2;
+    Ptr->y = ((Buffer[3] << 8) | Buffer[4]) >> 2;
+    Ptr->z = ((Buffer[5] << 8) | Buffer[6]) >> 2;
+}
+
+// Sets up FXSL8471 to deliver an interrupt on INT1 for single tap
+
+void FXLS8471SingleTapSetup(void) {
+    unsigned char CTRL_REG1_Data;
+    // Single Tap Only: Normal Mode, No LPF, 400 Hz ODR
+    // Step 1: To set up any configuration make sure to be in Standby Mode.
+    FXLS8471Write(0x2A, 0x08); //400 Hz, Standby Mode
+    // Step 2: Enable X and Y and Z Single Pulse
+    FXLS8471Write(0x21, 0x15);
+    // Step 3: Set Threshold 1.575g on X and 2.65g on Z
+    // Note: Each step is 0.063g per count
+    // 1.575g/0.063g = 25 counts
+    // 2.65g/0.063g = 42 counts
+    FXLS8471Write(0x23, 0x19); //Set X Threshold to 1.575g
+    FXLS8471Write(0x24, 0x19); //Set Y Threshold to 1.575g
+    FXLS8471Write(0x25, 0x2A); //Set Z Threshold to 2.65g
+    // Step 4: Set Time Limit for Tap Detection to 50 ms, Normal Mode, No LPF
+    // Data Rate 400 Hz, time step is 0.625 ms
+    // 50 ms/0.625 ms = 80 counts
+    FXLS8471Write(0x26, 0x50); //50 ms
+    // Step 5: Set Latency Time to 300 ms
+    // Data Rate 400 Hz, time step is 1.25 ms
+    // 300 ms/1.25 ms = 240 counts
+    FXLS8471Write(0x27, 0xF0); //300 ms
+    // Step 6: Route INT1 to System Interrupt
+    FXLS8471Write(0x2D, 0x08); //Enable Pulse Interrupt Block in System CTRL_REG4
+    FXLS8471Write(0x2E, 0x08); //Route Pulse Interrupt Block to INT1 hardware Pin CTRL_REG5
+    // Step 7: Put the device in Active Mode
+    CTRL_REG1_Data = FXLS8471Read(0x2A); //Read out the contents of the register
+    CTRL_REG1_Data |= 0x01; //Change the value in the register to Active Mode.
+    FXLS8471Write(0x2A, CTRL_REG1_Data); //Write in the updated value to put the device in Active Mode
+}
+
+// Sets up FXSL8471 to deliver an interrupt on INT1 for double tap
+
+void FXLS8471DoubleTapSetup1(void) {
+    unsigned char CTRL_REG1_Data;
+    // Double Tap Only: Low Power Mode, No LPF, 400 Hz ODR
+    // Step 1: To set up any configuration make sure to be in Standby Mode.
+    FXLS8471Write(0x2A, 0x08); //400 Hz, Standby Mode
+    // Step 2: Enable X, Y and Z Double Pulse with DPA = 0 no double pulse abort
+    FXLS8471Write(0x21, 0x2A);
+    // Step 3: Set Threshold 1 on X and Y and 2g on Z.
+    // Note: Every step is 0.063g
+    // 1 g/0.063g = 16 counts
+    // 2 g/0.063g = 32 counts
+    FXLS8471Write(0x23, 0x10); //Set X Threshold to 1g
+    FXLS8471Write(0x24, 0x10); //Set Y Threshold to 1g
+    FXLS8471Write(0x25, 0x20); //Set Z Threshold to 2g
+    // Step 4: Set Time Limit for Tap Detection to 60 ms LP Mode
+    // Note: 400 Hz ODR, Time step is 1.25 ms per step
+    // 60 ms/1.25 ms = 48 counts
+    FXLS8471Write(0x26, 0x30); //60 ms
+    // Step 5: Set Latency Time to 200 ms
+    // Note: 400 Hz ODR LPMode, Time step is 2.5 ms per step
+    // 00 ms/2.5 ms = 80 counts
+    FXLS8471Write(0x27, 0x50); //200 ms
+    // Step 6: Set Time Window for second tap to 300 ms
+    // Note: 400 Hz ODR LP Mode, Time step is 2.5 ms per step
+    // 300 ms/2.5 ms = 120 counts
+    FXLS8471Write(0x28, 0x78); //300 ms
+    // Step 7: Route INT1 to System Interrupt
+    FXLS8471Write(0x2D, 0x08); //Enable Pulse Interrupt in System CTRL_REG4
+    FXLS8471Write(0x2E, 0x08); //Route Pulse Interrupt to INT1 hardware Pin CTRL_REG5
+    // Step 8: Set the device to Active Mode
+    CTRL_REG1_Data = FXLS8471Read(0x2A); //Read out the contents of the register
+    CTRL_REG1_Data |= 0x01; //Change the value in the register to Active Mode.
+    FXLS8471Write(0x2A, CTRL_REG1_Data); //Write in the updated value to put the device in Active Mode
+}
+
+// Sets up FXSL8471 to deliver an interrupt on INT1 for double tap
+
+void FXLS8471DoubleTapSetup(void) {
+    unsigned char CTRL_REG1_Data;
+
+    // Step 1: To set up any configuration make sure to be in Standby Mode.
+    FXLS8471Write(0x2A, 0x00);
+    // Set the SLEEP mode and WAKE mode sampling rates to 50Hz and 400 Hz
+    FXLS8471Write(0x2A, 0x0C);
+    // Set the SLPE bit to enable Auto Wake/Sleep.  Set SLEEP mode and WAKE mode power modes to LOW POWER and NORMAL respectively
+    FXLS8471Write(0x2B, 0x1C);
+    // Set the Timeout Counter - register 0x29 - 1 second approximately
+    FXLS8471Write(0x29, 0x06);
+    // Following sets the double tap related parameters
+    // Step 2: Enable X, Y and Z Double Pulse with DPA = 0 no double pulse abort
+    FXLS8471Write(0x21, 0x2A);
+    // Step 3: Set Threshold 1g on X and Y and 1.5g on Z.
+    // Note: Every step is 0.063g
+    // 1 g/0.063g = 16 counts
+    // 1.5 g/0.063g = 24 counts
+    FXLS8471Write(0x23, 0x08); //Set X Threshold to 1g
+    FXLS8471Write(0x24, 0x08); //Set Y Threshold to 1g
+    FXLS8471Write(0x25, 0x08); //Set Z Threshold to 1.5g
+    // Step 4: Set Time Limit for Tap Detection to 60ms LP mode
+    // Note: 50 Hz Low Power, Time step is 10 ms per step
+    // 60 ms/10 ms = 6 counts
+    FXLS8471Write(0x26, 0x06);
+
+    // Step 5: Set Latency Time to 200 ms
+    // Note: 50 Hz ODR Low Power, Time step is 20 ms per step
+    // 200 ms/20 ms = 10 counts
+    FXLS8471Write(0x27, 0x0A);
+
+    // Step 6: Set Time Window for second tap to 300 ms
+    // Note: 50 Hz ODR Low Power, Time step is 20 ms per step
+    // 300 ms/20 ms = 15 counts
+    FXLS8471Write(0x28, 0x0F);
+
+    FXLS8471Write(0x2C, 0x10); // Enable the events which can WAKE the device from SLEEP mode - write to register 0x2C
+
+    FXLS8471Write(0x2D, 0x88); //Enable Pulse Interrupt in System CTRL_REG4
+
+    FXLS8471Write(0x2E, 0x08); //Route Pulse Interrupt to INT1 hardware Pin CTRL_REG5
+
+    // Step 8: Set the device to Active Mode
+    CTRL_REG1_Data = FXLS8471Read(0x2A); //Read out the contents of the register
+    CTRL_REG1_Data |= 0x01; //Change the value in the register to Active Mode.
+    FXLS8471Write(0x2A, CTRL_REG1_Data); //Write in the updated value to put the device in Active Mode
+}
 // Functions to read EUID48 from the 11AA02E48 IC. Right now a dummy function which simply fills zeros in EUID48
 // Bit period is 50us (corresponds to 20KHz)
 // Initializtion of IDIO.
@@ -485,48 +667,41 @@ void FormMacExtendedAddressFromEUID48(void) {
 void __attribute__((interrupt, auto_psv)) _T1Interrupt(void) {
     IFS0bits.T1IF = 0; // Clear Timer1 Interrupt flag
     Timer1IntOccurred = 1;
-    if (YELLOWLED_READ == 1)
-        YELLOWLED = 0;
-    else
-        YELLOWLED = 1;
-}
-
-// UART1 RX interrupt
-void __attribute__((interrupt, auto_psv)) _U1RXInterrupt(void) {
-    unsigned char RxChar;
-
-    IFS0bits.U1RXIF = 0; // Clear UART1 Rx Interrupt flag
-    RxChar = U1RXREG;
-    if (U1RxBufIndex != 128) {
-        U1RxBuf[U1RxBufIndex++] = RxChar;
-    }
-}
-
-// UART1 TX interrupt
-
-void __attribute__((interrupt, auto_psv)) _U1TXInterrupt(void) {
-    IFS0bits.U1TXIF = 0; // Clear UART1 TX interrupt flag
-    if (U1TxBufLen > U1TxBufIndex)
-        U1TXREG = U1TxBuf[U1TxBufIndex++];
-    else {
-        U1STAbits.UTXEN = 0;
-        U1TxCompleted = 1;
+/*    if (BATTERY_TYPE != COIN_CELL) {
+        if (YELLOWLED_READ == 1)
+            YELLOWLED = 0;
+        else
+            YELLOWLED = 1;
+    }*/
+    if (++Duration == DATA_PERIODICITY) {
+        Duration = 0;
+        PeriodicIntOccurred = 1;
     }
 }
 
 // Change Notification Interrupts for ACCINT1, ACCINT2, RFINT
 
 void __attribute__((interrupt, auto_psv)) _CNInterrupt(void) {
-    unsigned char T8;
+    unsigned char T8, i;
 
     // Clear CNIF Flag
     IFS1bits.CNIF = 0;
-
     // Check if RFINT interrupt occurred, this is active LOW
     if (PORTDbits.RD6 == 0) {
         T8 = MRF24J40_ReadShortRAMAddr(INTSTAT);
         if (T8 & 0x08) // if RX interrupt has been raised
+        {
+            // Set RXDECINV = 1; disable receiving packets off air.
+            MRF24J40_WriteShortRAMAddr(BBREG1, 0x04);
+            // Read address 0x300 in RXFIFO to get frame length value.
+            i = MRF24J40_ReadLongRAMAddr(RX_FIFO_BASE_ADDR);
+            // Read RXFIFO - MHR, MSDU, FCS, LQI, RSSI
+            for (T8 = 0; T8 < i + 2; T8++)
+                Psdu[T8] = MRF24J40_ReadLongRAMAddr(RX_FIFO_BASE_ADDR + 1 + T8);
+            // Clear RXDECINV = 0; enable receiving packets.
+            MRF24J40_WriteShortRAMAddr(BBREG1, 0x00);
             PhyPktReceived = 1;
+        }
         if (T8 & 0x01) // if TX complete interrupt has been raised
             TxCompleted = 1;
     }
@@ -540,11 +715,15 @@ void __attribute__((interrupt, auto_psv)) _CNInterrupt(void) {
     }
 }
 
-// RTC interrupt
+// RTCC interrupt
 
 void __attribute__((interrupt, auto_psv)) _RTCCInterrupt(void) {
     IFS3bits.RTCIF = 0; // Clear RTC Interrupt flag
     ALCFGRPTbits.ALRMEN = 1;
+    if (YELLOWLED_READ == 1)
+        YELLOWLED = 0;
+    else
+        YELLOWLED = 1;
 }
 
 unsigned char MRF24J40_ReadShortRAMAddr(unsigned char Addr) {
@@ -569,21 +748,25 @@ void MRF24J40_WriteShortRAMAddr(unsigned char Addr, unsigned char Dat) {
 unsigned char MRF24J40_ReadLongRAMAddr(unsigned int Addr) {
     unsigned char T8;
 
+    EnterCriticalSection();
     T8 = 0;
     RFCS = 0;
     SPI1SendByte(((Addr >> 3)&0x7F) | 0x80);
     SPI1SendByte(((Addr << 5)&0xE0));
     T8 = SPI1ReadByte();
     RFCS = 1;
+    LeaveCriticalSection();
     return (T8);
 }
 
 void MRF24J40_WriteLongRAMAddr(unsigned int Addr, unsigned char Dat) {
+    EnterCriticalSection();
     RFCS = 0;
     SPI1SendByte((((Addr >> 3))&0x7F) | 0x80);
     SPI1SendByte((((Addr << 5))&0xE0) | 0x10);
     SPI1SendByte(Dat);
     RFCS = 1;
+    LeaveCriticalSection();
 }
 
 unsigned long MRF24J40_GetSupportedChannels(void) {
@@ -604,24 +787,24 @@ void MRF24J40_HardwareReset(void) {
 }
 
 /*
-1. SOFTRST (0x2A) = 0x07 – Perform a software Reset. The bits will be automatically cleared to ‘0’ by hardware.
-2. PACON2 (0x18) = 0x98 – Initialize FIFOEN = 1 and TXONTS = 0x6.
-3. TXSTBL (0x2E) = 0x95 – Initialize RFSTBL = 0x9.
-4. RFCON0 (0x200) = 0x03 – Initialize RFOPT = 0x03.
-5. RFCON1 (0x201) = 0x01 – Initialize VCOOPT = 0x02.
-6. RFCON2 (0x202) = 0x80 – Enable PLL (PLLEN = 1).
-7. RFCON6 (0x206) = 0x90 – Initialize TXFIL = 1 and 20MRECVR = 1.
-8. RFCON7 (0x207) = 0x80 – Initialize SLPCLKSEL = 0x2 (100 kHz Internal oscillator).
-9. RFCON8 (0x208) = 0x10 – Initialize RFVCO = 1.
-10. SLPCON1 (0x220) = 0x21 – Initialize CLKOUTEN = 1 and SLPCLKDIV = 0x01.
-Configuration for nonbeacon-enabled devices (see Section 3.8 “Beacon-Enabled and Nonbeacon-Enabled Networks”):
-11. BBREG2 (0x3A) = 0x80 – Set CCA mode to ED.
-12. CCAEDTH = PHY_CCA_ED_THRESHOLD – Set CCA ED threshold.
-13. BBREG6 (0x3E) = 0x40 – Set appended RSSI value to RXFIFO.
-14. Enable interrupts – See Section 3.3 “Interrupts”.
-15. Set channel – See Section 3.4 “Channel Selection”.
-16. Set transmitter power - See “REGISTER 2-62: RF CONTROL 3 REGISTER (ADDRESS: 0x203)”.
-17. RFCTL (0x36) = 0x04 – Reset RF state machine.
+1. SOFTRST (0x2A) = 0x07 ? Perform a software Reset. The bits will be automatically cleared to ?0? by hardware.
+2. PACON2 (0x18) = 0x98 ? Initialize FIFOEN = 1 and TXONTS = 0x6.
+3. TXSTBL (0x2E) = 0x95 ? Initialize RFSTBL = 0x9.
+4. RFCON0 (0x200) = 0x03 ? Initialize RFOPT = 0x03.
+5. RFCON1 (0x201) = 0x01 ? Initialize VCOOPT = 0x02.
+6. RFCON2 (0x202) = 0x80 ? Enable PLL (PLLEN = 1).
+7. RFCON6 (0x206) = 0x90 ? Initialize TXFIL = 1 and 20MRECVR = 1.
+8. RFCON7 (0x207) = 0x80 ? Initialize SLPCLKSEL = 0x2 (100 kHz Internal oscillator).
+9. RFCON8 (0x208) = 0x10 ? Initialize RFVCO = 1.
+10. SLPCON1 (0x220) = 0x21 ? Initialize CLKOUTEN = 1 and SLPCLKDIV = 0x01.
+Configuration for nonbeacon-enabled devices (see Section 3.8 ?Beacon-Enabled and Nonbeacon-Enabled Networks?):
+11. BBREG2 (0x3A) = 0x80 ? Set CCA mode to ED.
+12. CCAEDTH = PHY_CCA_ED_THRESHOLD ? Set CCA ED threshold.
+13. BBREG6 (0x3E) = 0x40 ? Set appended RSSI value to RXFIFO.
+14. Enable interrupts ? See Section 3.3 ?Interrupts?.
+15. Set channel ? See Section 3.4 ?Channel Selection?.
+16. Set transmitter power - See ?REGISTER 2-62: RF CONTROL 3 REGISTER (ADDRESS: 0x203)?.
+17. RFCTL (0x36) = 0x04 ? Reset RF state machine.
 18. RFCTL (0x36) = 0x00.
 19. Delay at least 192 µs.
  */
@@ -642,16 +825,14 @@ void MRF24J40_Init(void) {
     // Code for channel selection, if not default channel 11, should come here
     MRF24J40_SetChannel(PHY_PIB_CURRENT_CHANNEL);
     // Code for setting Tx Power level, if it is different from 0 dB, should come here
+    MRF24J40_WriteShortRAMAddr(WAKECON, 0x80); // Enable Immediate Wake mode operations by setting IMMWAKE (WAKECON 0x22<7> bit)
     MRF24J40_ReadShortRAMAddr(INTSTAT); // Clear Interrupt flags
     MRF24J40_WriteShortRAMAddr(INTCON, 0xf6); // Enable Tx and Rx interrupts
     CNEN1bits.CN15IE = 1; // enable Change Notification interrupt for RFINT (which is on RD6)
 }
 
-/* This function does the necessary configuration for a non-beacon network.
-   It checks the SRAMNodeShortAddress variable to see if the node is the PAN coordinator or not, and accordingly does the initialization.*/
+/* This function does the necessary configuration for a non-beacon network */
 void MRF24J40_Configure_NonBeaconNetwork(void) {
-    unsigned char T8;
-
     // Write PANID into PANIDL and PANIDH registers
     MRF24J40_WriteShortRAMAddr(PANIDL, MacPANID);
     MRF24J40_WriteShortRAMAddr(PANIDH, MacPANID >> 8);
@@ -669,20 +850,30 @@ void MRF24J40_Configure_NonBeaconNetwork(void) {
     MRF24J40_WriteShortRAMAddr(EADR5, MacExtendedAddress[5]);
     MRF24J40_WriteShortRAMAddr(EADR6, MacExtendedAddress[6]);
     MRF24J40_WriteShortRAMAddr(EADR7, MacExtendedAddress[7]);
+}
 
-    // Set the PANCOORD (RXMCR 0x00<3>) bit = 1 to configure as PAN co-ordinator.
-    T8 = MRF24J40_ReadShortRAMAddr(RXMCR);
-    T8 |= 0b00001000;
-    MRF24J40_WriteShortRAMAddr(RXMCR, T8);
+/* This function puts the MRF24J40MA module in sleep mode */
+void MRF24J40_GoToSleep(void) {
+    MRF24J40_WriteShortRAMAddr(SOFTRST, 0x04); // SOFTRST (0x2A) = 0x04 ? Perform a Power Management Reset
+    MRF24J40_WriteShortRAMAddr(WAKECON, 0x80); // Enable Immediate Wake mode operations by setting IMMWAKE (WAKECON 0x22<7> bit)
+    MRF24J40_WriteShortRAMAddr(SLPACK, 0x80); // SLPACK (0x35) = 0x80 ? Put MRF24J40 to Sleep immediately
+}
 
-    // Clear the SLOTTED (TXMCR 0x11<5>) bit = 0 to use Unslotted CSMA-CA mode.
-    T8 = MRF24J40_ReadShortRAMAddr(TXMCR);
-    T8 &= ~0b00100000;
-    MRF24J40_WriteShortRAMAddr(TXMCR, T8);
+void MRF24J40_ExitSleep1(void) {
+    MRF24J40_WriteShortRAMAddr(WAKECON, 0xc0); // Wake sequence first step. Set REGWAKE bit (WAKECON 0x22<6> bit)
+    MRF24J40_WriteShortRAMAddr(WAKECON, 0x80); // Wake sequence second step. Clear REGWAKE bit (WAKECON 0x22<6> bit)
+    MRF24J40_WriteShortRAMAddr(RFCTL, 0x04);
+    MRF24J40_WriteShortRAMAddr(RFCTL, 0x00);
+    // After RF Reset, wait at least 2 ms
+    __delay_ms(2);
+}
 
-    // For PAN coordinator nodes, set BO and SO to 0x0f
-    // Configure BO (ORDER 0x10<7:4>) value = 0xF. Configure SO (ORDER 0x10<3:0>) value = 0xF.
-    MRF24J40_WriteShortRAMAddr(ORDER, 0xff);
+void MRF24J40_ExitSleep(void) {
+    // Hardware Reset and initialization of MRF24J40, PHY and MAC.  This is done since it
+    // has been found that a hardware reset is necessary when exiting sleep mode.  Since this hardware reset is required, it follows that a PHY and
+    // MAC resets are also required since a hardware reset will reset all MRF24J40 registers.
+    PHYInit();
+    MACInit();
 }
 
 /* this function transmits the packet passed in PktPtr. It blocks until the packet is transmitted */
@@ -742,6 +933,7 @@ void MRF24J40_SetTxPowerLevel(unsigned char TxPowerLevel) {
     // Update Tx Power Level - not implemented now
 }
 
+// PHY LAYER
 // Should be called by application layer to initialize the PHY layer. The PHY
 // layer is initialized and the PhyStatus is set to PHY_TRX_OFF
 void PHYInit(void) {
@@ -754,7 +946,10 @@ void PHYInit(void) {
     PhyState = PHY_TRX_OFF;
     PhyPktReceived = 0;
 }
-
+void NWKInit(void)
+{
+    
+}
 // Called for checking if channel is clear for transmission
 unsigned char PLME_CCA_REQUEST() {
     if (PhyState == PHY_TX_ON)
@@ -771,6 +966,7 @@ unsigned char PLME_CCA_REQUEST() {
 }
 
 // Called for Energy Detection in selected channel
+
 unsigned char PLME_ED_REQUEST(unsigned char *EnergyLevel) {
     if (PhyState == PHY_TX_ON)
         return PHY_TX_ON;
@@ -784,6 +980,7 @@ unsigned char PLME_ED_REQUEST(unsigned char *EnergyLevel) {
 }
 
 // Called for Reading a PHY PIB parameter
+
 unsigned char PLME_GET_REQUEST(unsigned char Attr, void *AttrPtr) {
     if (Attr == PHY_CURRENT_CHANNEL) {
         *(unsigned char *) AttrPtr = PhyCurrentChannel;
@@ -803,6 +1000,7 @@ unsigned char PLME_GET_REQUEST(unsigned char Attr, void *AttrPtr) {
 
 // In this primitive, the CCA mode, current channel and TX power levels are updated to the PIB values
 // before the transceiver state change is made
+
 unsigned char PLME_SET_TRX_STATE_REQUEST(unsigned char State) {
     // if PHY is already in requested state
     if (State == PhyState)
@@ -811,6 +1009,7 @@ unsigned char PLME_SET_TRX_STATE_REQUEST(unsigned char State) {
     // if request is to go into RX state
     if (State == PHY_RX_ON) {
         if (PhyState == PHY_TRX_OFF) {
+            MRF24J40_ExitSleep(); // On exiting Sleep state, the MRF24J40 goes into RX state
             PhyState = PHY_RX_ON;
             return PHY_SUCCESS;
         }
@@ -818,31 +1017,32 @@ unsigned char PLME_SET_TRX_STATE_REQUEST(unsigned char State) {
         if (PhyState == PHY_TX_ON) {
             return PHY_BUSY_TX;
         }
-    }
-        // if request is to go into TX State
+    }        // if request is to go into TX State
     else if (State == PHY_TX_ON) {
         if (PhyState == PHY_TX_ON)
             return PHY_BUSY_TX;
         // If not already transmitting, return SUCCESS status, but there is no need to
         // put the MRF24J40 into "TX" mode, since it will start transmission once the TX is triggered.
         return PHY_SUCCESS;
-    }
-        // if request is to go into OFF state
+    }        // if request is to go into OFF state
     else if (State == PHY_TRX_OFF) {
         if (PhyState == PHY_RX_ON) {
+            MRF24J40_GoToSleep();
             PhyState = PHY_TRX_OFF;
             return PHY_SUCCESS;
         }
-    }
-        // if request is to FORCE go into OFF state
+    }        // if request is to FORCE go into OFF state
     else if (State == PHY_FORCE_TRX_OFF) {
+        MRF24J40_GoToSleep();
         PhyState = PHY_TRX_OFF;
         return PHY_SUCCESS;
     }
     return PHY_INVALID_PARAMETER;
 }
 
-// The REQUEST primitive is issued by calling PLME_SET_REQUEST. 
+// The REQUEST primitive is issued by calling PLME_SET_REQUEST. The CONFIRM
+// primitive is nothing but the return value.
+
 unsigned char PLME_SET_REQUEST(unsigned char Attr, void *AttrPtr) {
     unsigned char T8;
     unsigned long T32;
@@ -855,16 +1055,14 @@ unsigned char PLME_SET_REQUEST(unsigned char Attr, void *AttrPtr) {
             return PHY_SUCCESS;
         } else
             return PHY_INVALID_PARAMETER;
-    }
-    else if (Attr == PHY_CHANNELS_SUPPORTED) {
+    } else if (Attr == PHY_CHANNELS_SUPPORTED) {
         T32 = *(unsigned long *) AttrPtr;
-        if ((T32 & ~(MRF24J40_GetSupportedChannels())) == 0) {
+        if ((T32 & ~MRF24J40_GetSupportedChannels()) == 0) {
             PhyChannelsSupported = *((unsigned long *) AttrPtr);
             return PHY_SUCCESS;
         } else
             return PHY_INVALID_PARAMETER;
-    }
-    else if (Attr == PHY_TRANSMIT_POWER) {
+    } else if (Attr == PHY_TRANSMIT_POWER) {
         T8 = *(unsigned char *) AttrPtr;
         if (T8 <= 0xbf) {
             PhyTransmitPower = T8;
@@ -872,8 +1070,7 @@ unsigned char PLME_SET_REQUEST(unsigned char Attr, void *AttrPtr) {
             return PHY_SUCCESS;
         } else
             return PHY_INVALID_PARAMETER;
-    }
-    else if (Attr == PHY_CCA_MODE) {
+    } else if (Attr == PHY_CCA_MODE) {
         T8 = *(unsigned char *) AttrPtr;
         if ((T8 == 1) || (T8 == 2) || (T8 == 3)) {
             PhyCCAMode = T8;
@@ -909,7 +1106,7 @@ void MACInit(void) {
     EUID48Init();
     ReadEUID48From11AA02E48();
     FormMacExtendedAddressFromEUID48();
-    MacCoordExtendedAddress[7] = MAC_COORD_EUID_BYTE7; // IEEE 64 bit address MSByte
+    MacCoordExtendedAddress[7] = MAC_COORD_EUID_BYTE7; // IEEE 64 bit address
     MacCoordExtendedAddress[6] = MAC_COORD_EUID_BYTE6; // IEEE 64 bit address
     MacCoordExtendedAddress[5] = MAC_COORD_EUID_BYTE5; // IEEE 64 bit address
     MacCoordExtendedAddress[4] = MAC_COORD_EUID_BYTE4; // IEEE 64 bit address
@@ -918,14 +1115,17 @@ void MACInit(void) {
     MacCoordExtendedAddress[1] = MAC_COORD_EUID_BYTE1; // IEEE 64 bit address
     MacCoordExtendedAddress[0] = MAC_COORD_EUID_BYTE0; // IEEE 64 bit address
     MacCoordShortAddress = MAC_COORD_SHORT_ADDRESS_VALUE;
-    MacDSN = rand(); // Sequence number to be added to the transmitted data/MAC command frame. Initialize with call to rand
     MacPANID = MAC_PANID_VALUE;
-    MacShortAddress = MAC_COORD_SHORT_ADDRESS_VALUE;
+    MacShortAddress = MAC_SHORT_ADDRESS_VALUE; // if ASSOCIATE request is used, it may be overwritten with value allocated by PAN coordinator
+    MacConnectedToPAN = 0;
     MRF24J40_Configure_NonBeaconNetwork();
 }
 
-// MCPS_DATA REQUEST and CONFIRM
+void MacDSNInit() {
+    MacDSN = rand(); // Sequence number to be added to the transmitted data/MAC command frame. Initialize with call to rand
+}
 
+// MCPS_DATA REQUEST
 unsigned char MCPS_DATA_REQUEST(unsigned char SrcAddrMode, unsigned int SrcPANID, unsigned char *SrcAddr,
         unsigned char DstAddrMode, unsigned int DstPANID, unsigned char *DstAddr,
         unsigned char MsduLength, unsigned char* MsduPtr, unsigned char MsduHandle, unsigned char TxOptions) {
@@ -991,10 +1191,15 @@ unsigned char MCPS_DATA_REQUEST(unsigned char SrcAddrMode, unsigned int SrcPANID
     for (T8 = 0; T8 < MsduLength; T8++)
         *PsduPtr++ = *MsduPtr++;
 
-    // Transmision.
-    // Check TXNSTAT bit for transmission status
+    // Bring the MRF24J40 out of sleep mode (the MRF24J40_ExitSleep function does a HW reset of the MRF24J40 which will bring it out of Sleep mode)
+    MRF24J40_ExitSleep();
+    // Transmit the packet
     MRF24J40_Tx(&Psdu[0], MacFrameLength);
+    // Read TXNSTAT bit for transmission status
     T8 = MRF24J40_ReadShortRAMAddr(TXSTAT);
+    // Put the RF Transceiver to sleep mode
+    MRF24J40_GoToSleep();
+    // Check the TXNSTAT bit and accordingly send return value
     if (T8 & 0x20)
         return MAC_CHANNEL_ACCESS_FAILURE;
     if (T8 & 0x01)
@@ -1003,40 +1208,32 @@ unsigned char MCPS_DATA_REQUEST(unsigned char SrcAddrMode, unsigned int SrcPANID
         return MAC_SUCCESS;
 }
 
-// MLME_ASSOCIATE REQUEST, CONFIRM. INDICATION and RESPONSE also for FFD.
-// MLME-SAP association primitives define how a device becomes associated with a PAN.
+// MLME_ASSOCIATE REQUEST
 // If this primitive is successful, it returns MAC_ASSOCIATE_REQUEST_SUCCESS and writes the
 // allocated short address into the integer pointed to by ResultPtr
-// MLME_ASSOCIATE_RESPONSE. Sends Response command frame for MLME_ASSOCIATE_REQUEST.  This is used only in PAN Coordinators
-
-unsigned char MLME_ASSOCIATE_RESPONSE() {
-    unsigned char T8, i, SrcAddrIndex;
+unsigned char MLME_ASSOCIATE_REQUEST(unsigned char LogicalChannel, unsigned char CoordAddrMode, unsigned int CoordPANID,
+        unsigned char *CoordAddress, unsigned char CapabilityInformation, unsigned char SecurityEnable,
+        unsigned int *ResultPtr) {
+    unsigned char T8;
     volatile unsigned char *PsduPtr;
-    unsigned int NodeShortAddress;
 
-    // If maximum number of nodes per network have already been added, respond with failure code
-    if (NumNodes == MAX_NODES_PER_PAN)
-        T8 = MAC_ASSOCIATE_REQUEST_PAN_FULL;
+    // Parameter validation.  The CapabilityInformation and SecurityEnable parameters are ignored.
+    if ((LogicalChannel < 11) && (LogicalChannel > 26))
+        return MAC_INVALID_PARAMETER;
+    if ((CoordAddrMode != MAC_ADDR_MODE_SHORT) && (CoordAddrMode != MAC_ADDR_MODE_EXTENDED))
+        return MAC_INVALID_PARAMETER;
 
-        // otherwise add the node into the ACL List.
-        // NOTE : Not Implemented : check if a node with same extended address is already in the list
-    else {
-        (((Psdu[1] & 0x0c) >> 2) == MAC_ADDR_MODE_SHORT) ? (SrcAddrIndex = 9) : (SrcAddrIndex = 15);
-        for (i = 0; i < 8; i++) {
-            MacACLEntryDescriptorSet[NumNodes].ACLExtendedAddress[i] = Psdu[SrcAddrIndex + i];
-        }
-        NodeShortAddress = NumNodes + 1;
-        MacACLEntryDescriptorSet[i].ACLShortAddress = NodeShortAddress;
-        MacACLEntryDescriptorSet[i].ACLPANID = MacPANID;
-        NumNodes += 1;
-        T8 = MAC_ASSOCIATE_REQUEST_SUCCESS;
-    }
+    // Update Channel and PANID
+    PLME_SET_REQUEST(PHY_CURRENT_CHANNEL, &LogicalChannel);
+    MacPANID = CoordPANID;
 
     // Calculate MHR Length
-    T8 = 23; // 2 bytes FCS, 1 byte sequence number, 2 bytes Destination PANID, 2 bytes Source PANID, 8 bytes each of Source and Dest Extended addresses
+    T8 = 7; // 2 bytes FCS, 1 byte sequence number, 2 bytes Destination PANID, 2 bytes Source PANID which is mandated by IEEE to be 0xffff(broadcast PANID)
+    CoordAddrMode == MAC_ADDR_MODE_SHORT ? (T8 += 2) : (T8 += 8); // if short address, 2 bytes more; else extended address means 8 bytes more
+    T8 += 8; // extended address is always used for the device trying to associate with a PAN
     MacHeaderLength = T8; // MHR Length.
     // Calculate Frame Length (equal to MHR + MSDULength)
-    MacFrameLength = MacHeaderLength + 4; // Frame Length
+    MacFrameLength = MacHeaderLength + 2; // Frame Length
 
     // Fill Psdu with MHR and MSDU
     PsduPtr = &Psdu[0];
@@ -1048,28 +1245,31 @@ unsigned char MLME_ASSOCIATE_RESPONSE() {
     *PsduPtr++ = T8;
     // Write FCS MSByte
     T8 = 0;
-    T8 |= MAC_ADDR_MODE_EXTENDED << 6; // Source Address Mode field is Extended address
-    T8 |= MAC_ADDR_MODE_EXTENDED << 2; // Destination Address Mode field
+    T8 |= 0x03 << 6; // Source Address Mode field is Extended address
+    T8 |= CoordAddrMode << 2; // Destination Address Mode field
     *PsduPtr++ = T8;
     // Sequence number field
     *PsduPtr++ = MacDSN++;
     // Destination PAN Identifier
-    *PsduPtr++ = MacPANID; // LSByte of PANID (Destination PANID is same as source PANID since all packets are intraPAN)
-    *PsduPtr++ = MacPANID >> 8; // MSByte of PANID
-    // Destination Extended Address (LSbyte first)
-    for (i = 0; i < 8; i++)
-        *PsduPtr++ = MacACLEntryDescriptorSet[NumNodes - 1].ACLExtendedAddress[i];
-    // Source PANID 
-    *PsduPtr++ = MacPANID;
-    *PsduPtr++ = MacPANID;
-    // Source Extended Address (stored LSByte first)
+    *PsduPtr++ = CoordPANID; // LSByte of Destination PANID (Destination PANID is same as source PANID since all packets are intraPAN)
+    *PsduPtr++ = CoordPANID >> 8; // MSByte of Destination PANID
+    // Destination address (stored LSByte first)
+    if (CoordAddrMode == 2) {
+        for (T8 = 0; T8 < 2; T8++)
+            *PsduPtr++ = *CoordAddress++;
+    } else {
+        for (T8 = 0; T8 < 8; T8++)
+            *PsduPtr++ = *CoordAddress++;
+    }
+    // Source PANID which is mandated to be 0xffff (broadcast PANID)
+    *PsduPtr++ = 0xff;
+    *PsduPtr++ = 0xff;
+    // Source Address (stored LSByte first)
     for (T8 = 0; T8 < 8; T8++)
         *PsduPtr++ = MacExtendedAddress[T8];
     // MSDU
-    *PsduPtr++ = MAC_ASSOCIATION_RESPONSE;
-    *PsduPtr++ = NodeShortAddress;
-    *PsduPtr++ = NodeShortAddress >> 8;
-    *PsduPtr++ = T8;
+    *PsduPtr++ = MAC_ASSOCIATION_REQUEST;
+    *PsduPtr++ = CapabilityInformation;
 
     // Transmision.
     MRF24J40_Tx(&Psdu[0], MacFrameLength);
@@ -1081,7 +1281,27 @@ unsigned char MLME_ASSOCIATE_RESPONSE() {
         if ((T8 & 0xc0) == aMaxFrameRetries)
             return MAC_NO_ACK;
     }
-    return MAC_SUCCESS;
+    // If Transmission is successful and ACK has been received, wait for maximum of 
+    // aResponseWaitTime symbol periods for Response command from Coordinator
+    SetTimer1(aResponseWaitTime);
+    PhyPktReceived = 0;
+    PLME_SET_TRX_STATE_REQUEST(PHY_RX_ON);
+    while ((Timer1IntOccurred == 0) && (PhyPktReceived == 0));
+    PLME_SET_TRX_STATE_REQUEST(PHY_TRX_OFF);
+    // If timeout occurred without any response
+    if (PhyPktReceived == 0) // this means Timer1 timed out
+    {
+        Timer1IntOccurred = 0;
+        return MAC_NO_DATA;
+    }// If a packet has been received, check if it is the Response command
+    else {
+        if ((Psdu[23] == MAC_ASSOCIATION_RESPONSE) && (Psdu[26] == MAC_ASSOCIATE_REQUEST_SUCCESS)) {
+            *ResultPtr = Psdu[24] + ((unsigned int) Psdu[25] << 8); // Fill in the passed pointer to MacPANID
+            return MAC_ASSOCIATE_REQUEST_SUCCESS;
+        } else {
+            return (Psdu[26]);
+        }
+    }
 }
 
 // MLME_GET REQUEST. The MLME-SAP get primitives define how to read values from the MAC PIB.
@@ -1132,7 +1352,6 @@ unsigned char MLME_SET_REQUEST(unsigned int PIBAttribute, unsigned char *ValuePt
 }
 
 // MLME_RESET REQUEST. MLME-SAP reset primitives specify how to reset the MAC sublayer to its default values.
-
 unsigned char MLME_RESET_REQUEST(unsigned char SetDefaultPIB) {
     unsigned char val1, val2, val3;
 
@@ -1155,8 +1374,8 @@ unsigned char MLME_RESET_REQUEST(unsigned char SetDefaultPIB) {
     }
     return MAC_SUCCESS;
 }
-// MLME_RX_ENABLE REQUEST, CONFIRM. MLME-SAP receiver state primitives define how a device can enable or disable the receiver at a given time.
 
+// MLME_RX_ENABLE REQUEST, CONFIRM. MLME-SAP receiver state primitives define how a device can enable or disable the receiver at a given time.
 unsigned char MLME_RX_ENABLE(unsigned char DeferPermit, unsigned int RxOnTime, unsigned int RxOnDuration) {
     // Only the RxOnDuration parameter is considered in non-beacon enabled networks.
     // RxOnDuration specifies the number of symbol periods for which the receiver should be enabled.
@@ -1182,58 +1401,291 @@ void AcquireData(void) {
     __delay_ms(1); // wait for MCP9700A to stabilize
     Temperature = ConvertADCValToTemperature(ADCConvert(TEMPERATURE_SENSOR_ADC_CHANNEL));
     TEMPSENSOR_PWRCTRL = 0;
+
+    // Read Accelerometer data
+    FXLS8471Write(FXLS8471Q_CTRL_REG1, 0x01); // Put FXLS8471 into Active Wake state
+    __delay_ms(2); // Wait for at least TSTBY->ACT before taking reading
+    FXLS8471ReadAccel(&AccRawData);
+    FXLS8471Write(FXLS8471Q_CTRL_REG1, 0x00); // Put FXLS8471 into Standby state
 }
 
-// This function reads sensors and forms the Data packet which is sent periodically over the U1 TX link. This includes BatteryVoltage and Temperature.
+//AES functions
+const unsigned char sbox[16*16] = {	//declare static
+   0x63,0x7C,0x77,0x7B,0xF2,0x6B,0x6F,0xC5,0x30,0x01,0x67,0x2B,0xFE,0xD7,0xAB,0x76,
+   0xCA,0x82,0xC9,0x7D,0xFA,0x59,0x47,0xF0,0xAD,0xD4,0xA2,0xAF,0x9C,0xA4,0x72,0xC0,
+   0xB7,0xFD,0x93,0x26,0x36,0x3F,0xF7,0xCC,0x34,0xA5,0xE5,0xF1,0x71,0xD8,0x31,0x15,
+   0x04,0xC7,0x23,0xC3,0x18,0x96,0x05,0x9A,0x07,0x12,0x80,0xE2,0xEB,0x27,0xB2,0x75,
+   0x09,0x83,0x2C,0x1A,0x1B,0x6E,0x5A,0xA0,0x52,0x3B,0xD6,0xB3,0x29,0xE3,0x2F,0x84,
+   0x53,0xD1,0x00,0xED,0x20,0xFC,0xB1,0x5B,0x6A,0xCB,0xBE,0x39,0x4A,0x4C,0x58,0xCF,
+   0xD0,0xEF,0xAA,0xFB,0x43,0x4D,0x33,0x85,0x45,0xF9,0x02,0x7F,0x50,0x3C,0x9F,0xA8,
+   0x51,0xA3,0x40,0x8F,0x92,0x9D,0x38,0xF5,0xBC,0xB6,0xDA,0x21,0x10,0xFF,0xF3,0xD2,
+   0xCD,0x0C,0x13,0xEC,0x5F,0x97,0x44,0x17,0xC4,0xA7,0x7E,0x3D,0x64,0x5D,0x19,0x73,
+   0x60,0x81,0x4F,0xDC,0x22,0x2A,0x90,0x88,0x46,0xEE,0xB8,0x14,0xDE,0x5E,0x0B,0xDB,
+   0xE0,0x32,0x3A,0x0A,0x49,0x06,0x24,0x5C,0xC2,0xD3,0xAC,0x62,0x91,0x95,0xE4,0x79,
+   0xE7,0xC8,0x37,0x6D,0x8D,0xD5,0x4E,0xA9,0x6C,0x56,0xF4,0xEA,0x65,0x7A,0xAE,0x08,
+   0xBA,0x78,0x25,0x2E,0x1C,0xA6,0xB4,0xC6,0xE8,0xDD,0x74,0x1F,0x4B,0xBD,0x8B,0x8A,
+   0x70,0x3E,0xB5,0x66,0x48,0x03,0xF6,0x0E,0x61,0x35,0x57,0xB9,0x86,0xC1,0x1D,0x9E,
+   0xE1,0xF8,0x98,0x11,0x69,0xD9,0x8E,0x94,0x9B,0x1E,0x87,0xE9,0xCE,0x55,0x28,0xDF,
+   0x8C,0xA1,0x89,0x0D,0xBF,0xE6,0x42,0x68,0x41,0x99,0x2D,0x0F,0xB0,0x54,0xBB,0x16
+};
 
-void FormDataPkt(void) {
+unsigned char rcon[10] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36};
+
+typedef unsigned char state_t[4][4];
+state_t matrix;
+state_t* state = &matrix;	//declare static
+
+
+unsigned char RoundKey[176];	//declare static
+
+//encryption key (hardcoded for now)
+const unsigned char key[16] = {0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0xb7, 0xad, 0xd6, 0xaf, 0x7f, 0x67, 0x98};
+
+void keyExpansion(void) {	//declare static
+	unsigned char i,j,k, temp[4];
+
+	for (i=0; i<4; i++) {
+		RoundKey[i*4 + 0] = key[i*4 +0];
+		RoundKey[i*4 + 1] = key[i*4 +1];
+		RoundKey[i*4 + 2] = key[i*4 +2];
+		RoundKey[i*4 + 3] = key[i*4 +3];
+	//instead of loop
+	}
+
+	for (; i<44; i++) {
+		for (j=0; j<4; j++)
+			temp[j] = RoundKey[(i-1)*4 + j];
+
+
+		if (i%4==0) {
+
+			//function rotWord()
+			{
+			k=temp[0];
+			temp[0]=temp[1];
+			temp[1]=temp[2];
+			temp[2]=temp[3];
+			temp[3]=k;
+			//instead of loop
+			}
+
+			//function subWord()
+			{
+			temp[0] = sbox[temp[0]];
+			temp[1] = sbox[temp[1]];
+			temp[2] = sbox[temp[2]];
+			temp[3] = sbox[temp[3]];
+			//instead of loop
+			}
+
+
+			temp[0] = temp[0] ^ rcon[i/4 - 1];
+		}
+
+
+		{
+		RoundKey[i*4 + 0] = RoundKey[(i-4)*4 + 0] ^ temp[0];	//printf("%u,%x\t", i*4+0, RoundKey[i*4 + 0]);
+		RoundKey[i*4 + 1] = RoundKey[(i-4)*4 + 1] ^ temp[1];	//printf("%u,%x\t", i*4+1, RoundKey[i*4 + 1]);
+		RoundKey[i*4 + 2] = RoundKey[(i-4)*4 + 2] ^ temp[2];	//printf("%u,%x\t", i*4+2, RoundKey[i*4 + 2]);
+		RoundKey[i*4 + 3] = RoundKey[(i-4)*4 + 3] ^ temp[3];	//printf("%u,%x\t", i*4+3, RoundKey[i*4 + 3]);
+		//instead of loop
+		}
+		//printf("\n");
+
+	}
+}
+
+
+
+void AddRoundKey(unsigned char round) {	//declare static
+	unsigned char i,j;
+	for (i=0; i<4; i++)
+		for (j=0; j<4; j++)
+			(*state)[j][i] ^= RoundKey[round*16 + i*4 +j];
+}
+
+
+void SubBytes(void) {		//declare static
+	unsigned char i,j;
+	for (i=0; i<4; i++)
+	for (j=0; j<4; j++)
+		(*state)[i][j] = sbox[(*state)[i][j]];
+}
+
+
+
+void ShiftRows(void) {	//declare static
+	unsigned char temp;
+
+	temp = (*state)[1][0];
+	(*state)[1][0] = (*state)[1][1];
+	(*state)[1][1] = (*state)[1][2];
+	(*state)[1][2] = (*state)[1][3];
+	(*state)[1][3] = temp;
+
+	temp = (*state)[2][0];
+	(*state)[2][0] = (*state)[2][2];
+	(*state)[2][2] = temp;
+	temp = (*state)[2][1];
+	(*state)[2][1] = (*state)[2][3];
+	(*state)[2][3] = temp;
+
+	temp = (*state)[3][0];
+	(*state)[3][0] = (*state)[3][3];
+	(*state)[3][3] = (*state)[3][2];
+	(*state)[3][2] = (*state)[3][1];
+	(*state)[3][1] = temp;
+
+	//instead of following loop
+	/*
+	unsigned char i, j, temp, repeat;
+	for (i=1; i<4; i++) {
+		for (repeat=0; repeat<i; repeat++) {
+			temp = state[i][0];
+			for (j=0; j<4; j++)
+				state[i][j] = state[i][j+1];
+			state[i][3] = temp;
+		}
+	}
+	*/
+}
+
+
+
+unsigned char xtime(unsigned char x)	//declare static
+{
+  return ((x<<1) ^ (((x>>7) & 1) * 0x1b));
+}
+
+// MixColumns function mixes the columns of the state matrix
+void MixColumns(void)	//declare static
+{
+  unsigned char i;
+  unsigned char Tmp,Tm,t;
+  for(i = 0; i < 4; ++i)
+  {  
+    t   = (*state)[0][i];
+    Tmp = (*state)[0][i] ^ (*state)[1][i] ^ (*state)[2][i] ^ (*state)[3][i] ;
+    Tm  = (*state)[0][i] ^ (*state)[1][i] ; Tm = xtime(Tm);  (*state)[0][i] ^= Tm ^ Tmp ;
+    Tm  = (*state)[1][i] ^ (*state)[2][i] ; Tm = xtime(Tm);  (*state)[1][i] ^= Tm ^ Tmp ;
+    Tm  = (*state)[2][i] ^ (*state)[3][i] ; Tm = xtime(Tm);  (*state)[2][i] ^= Tm ^ Tmp ;
+    Tm  = (*state)[3][i] ^ t ;        Tm = xtime(Tm);  (*state)[3][i] ^= Tm ^ Tmp ;
+  }
+}
+
+
+void encrypt(void) {
+	unsigned char round=0;
+
+	//printf("KEY\n");
+	//DisplayRoundKey(round);
+	AddRoundKey(0);
+	//printf("state after first AddRoundKey operation\n");
+	//DisplayState();
+
+	for (round=1; round<10; round++) {
+		//printf("RoundKey for round %u\n", round);
+		//DisplayRoundKey(round);
+		SubBytes();
+		//printf("State after round %u SubByte operation\n", round);
+		//DisplayState();
+		ShiftRows();
+		//printf("State after round %u ShiftRows operation\n", round);
+		//DisplayState();
+		MixColumns();
+		//printf("State after round %u MixColumn operation\n", round);
+		//DisplayState();
+		AddRoundKey(round);
+	}
+
+	SubBytes();
+	ShiftRows();
+	AddRoundKey(10);
+
+}
+//end of AES functions
+
+
+
+// This function reads sensors and forms the Data packet which is sent periodically to the base station. This includes BatteryVoltage and Temperature.
+void FormPeriodicDataPkt(void) {
     unsigned char i;
 
     i = 0;
+    Msdu[i++] = NodeStatus;
     Msdu[i++] = NODE_TYPE;
+    Msdu[i++] = NODE_TYPE >> 8;
+    Msdu[i++] = PERIODIC_DATA_PKT;
     Msdu[i++] = BatteryVoltage;
     Msdu[i++] = BatteryVoltage >> 8;
-    Msdu[i++] = Temperature;
+    Msdu[i++] = 0x20;//Temperature;
+    Msdu[i++] = AccRawData.x;
+    Msdu[i++] = AccRawData.x >> 8;
+    Msdu[i++] = AccRawData.y;
+    Msdu[i++] = AccRawData.y >> 8;
+    Msdu[i++] = AccRawData.z;
+    Msdu[i++] = AccRawData.z >> 8;
+    Msdu[i++] = 0;  //my_courtesy
+    Msdu[i++] = 0;  //my_courtesy
+    Msdu[i++] = 0;  //my_courtesy
     MsduLength = i;
+    
+    
+    //code to execute AES encryption on Msdu
+    
+    keyExpansion();
+    
+    unsigned char a, b, c=0;
+    
+    //copying the plaintext ie. Msdu to the state matrix
+    for (b=0; b<4; b++) {
+		for (a=0; a<4; a++)
+			(*state)[a][b] = Msdu[c++];
+	}
+    
+    
+    encrypt();
+    
+    //copying the state matrix to the variable Msdu
+    c=0;
+    for (b=0; b<4; b++) {
+        for (a=0; a<4; a++)
+            Msdu[c++] = (*state)[a][b];
+    }
+    
 }
 
 int main(void) {
-    unsigned char i, j;
-    unsigned char T8,datalength=13;
-    unsigned char datapkt[datalength];
+    unsigned char T8;
 
-    // Power ON delay
-    __delay_ms(100);
-
-    // Initialization of NodeType - should be done first
-    if (NODE_TYPE == MEDIATOR) {
-        NumNodes = 0;
-        for (i = 0; i < MAX_NODES_PER_PAN; i++) {
-            for (j = 0; j < 8; j++) {
-                MacACLEntryDescriptorSet[i].ACLExtendedAddress[j] = 0;
-            }
-            MacACLEntryDescriptorSet[i].ACLShortAddress = 0;
-            MacACLEntryDescriptorSet[i].ACLPANID = 0;
-        }
-    }
+    // Initialization of variables
+    Duration = 0;
+    NodeStatus = 0;
+    DoubleTapIntOccurred = 0;
 
     // Hardware platform initialization
     BoardInit();
 
-    // Power ON signature
-    REDLED = 1;
+    // Power on LED signature
+    YELLOWLED = 1;
     __delay_ms(100);
-    REDLED = 0;
-    __delay_ms(100);
+    YELLOWLED = 0;
+    __delay_ms(100); 
     GREENLED = 1;
     __delay_ms(100);
     GREENLED = 0;
     __delay_ms(100);
-    YELLOWLED = 1;
+      REDLED = 1;
     __delay_ms(100);
-    YELLOWLED = 0;
+    REDLED = 0;
     __delay_ms(100);
+  
+    
+    // Initialize ACCelerometer.  This also sets the FXLS8471 into Standby state (minimum current consumption).
+    if (FXLS8471Init() == 1)
+        NodeStatus |= 0x80;
 
+    // RTC initialization. 
     //RTCCInit(0x15,0x02,0x02,0x01,0x14,0x20,0x00); // 2015 Feb 2, Monday, 14:20:00 hours
 
     // Initialization of PHY layer
@@ -1241,195 +1693,35 @@ int main(void) {
 
     // Initialization of MAC layer
     MACInit();
+    srand(MAC_SHORT_ADDRESS_VALUE);
+    MacDSNInit();
 
-    // Events which are monitored are MRF24J40MA interrupt, and the ACCELEROMETER interrupt. Both these are sensed through CHANGE NOTIFICATION interrupts of the PIC.
+    // Put the RF Transceiver to sleep mode
+    MRF24J40_GoToSleep();
+
+    // Enablement of change notification interrupts
     IFS1bits.CNIF = 0; // Clear Change Notification interrupt Flag
     IEC1bits.CNIE = 1; // enable Change Notification interrupts in general
 
-    // welcome message
-   /* i = 0;
-    U1TxBuf[i++] = 'W';
-    U1TxBuf[i++] = 'e';
-    U1TxBuf[i++] = 'l';
-    U1TxBuf[i++] = 'c';
-    U1TxBuf[i++] = 'o';
-    U1TxBuf[i++] = 'm';
-    U1TxBuf[i++] = 'e';
-    U1TxBuf[i++] = ' ';
-    U1TxBuf[i++] = 't';
-    U1TxBuf[i++] = 'o';
-    U1TxBuf[i++] = ' ';
-    U1TxBuf[i++] = 'P';
-    U1TxBuf[i++] = 'A';
-    U1TxBuf[i++] = 'N';
-    U1TxBuf[i++] = ' ';
-    BinToAscii(MAC_PANID_VALUE, (unsigned char *) &U1TxBuf[i], 4, 0);
-    i += 4;
-    U1TxBuf[i++] = '\n';
-    U1TxBuf[i++] = '\r';
-    U1TxBufLen = i;
-    U1TxBufIndex = 0;
-    U1Tx();
-    while (U1TxCompleted == 0); // wait for transmission of welcome message
-*/
+    // On power on, after all initialization, send a DATA PACKET
+    AcquireData();
+    FormPeriodicDataPkt();
+    T8 = MCPS_DATA_REQUEST(MAC_ADDR_MODE_SHORT, MacPANID, (unsigned char *) &MacShortAddress, MAC_ADDR_MODE_SHORT, MacPANID, (unsigned char *) &MacCoordShortAddress, MsduLength, &Msdu[0], 1, 0x1);
+
+    // While loop with Sleep. CPU IPL is zero, so the interrupts at priority level 4 can all wake up the CPU. This also causes the
+    // ISR which woke up the CPU, to be executed BEFORE the instruction following Sleep();
+    // Events which can wake up the module are the MRF24J40MA interrupt, and the ACCELEROMETER interrupt. Both these are sensed through CHANGE NOTIFICATION interrupts of the PIC.
     while (1) {
-        
-        if (PhyPktReceived == 1) {
-            PhyPktReceived = 0;
-            GREENLED = 1;
+        asm ("PWRSAV #0");
+        Sleep(); // This is a MACRO which translates to PWRSAV instruction with argument 0 (ie, microcontroller goes into SLEEP state)
 
-            // Set RXDECINV = 1; disable receiving packets off air.
-            MRF24J40_WriteShortRAMAddr(BBREG1, 0x04);
-            // Read address 0x300 in RXFIFO to get frame length value.
-            PsduLength = MRF24J40_ReadLongRAMAddr(RX_FIFO_BASE_ADDR);
-            // Read RXFIFO - MHR, MSDU, FCS, LQI, RSSI
-            for (j = 0; j < PsduLength + 2; j++)
-                Psdu[j] = MRF24J40_ReadLongRAMAddr(RX_FIFO_BASE_ADDR + 1 + j);
-            /*datapkt[0]=Psdu[9];
-            datapkt[1]=Psdu[10];
-            datapkt[2]=Psdu[11];
-            datapkt[3]=Psdu[12];
-            datapkt[4]=Psdu[13];
-            datapkt[5]=Psdu[14];
-            datapkt[6]=Psdu[15];
-            datapkt[7]=Psdu[17];
-            datapkt[8]=Psdu[16];
-            datapkt[9]=Psdu[19];
-            datapkt[10]=Psdu[18];
-            datapkt[11]=Psdu[21];
-            datapkt[12]=Psdu[20];*/
-            for(j =0;j<datalength;j++)
-                datapkt[j]=Psdu[j+9];
-            
-            // Clear RXDECINV = 0; enable receiving packets.
-            MRF24J40_WriteShortRAMAddr(BBREG1, 0x00);
-            
-
-            // Send out the received packet (selected information only) on the UART1
-          /*  i = 0;
-            BinToAscii(Psdu[11], &U1TxBuf[i], 2, 0);
-            i += 2; // NodeType MSByte
-            BinToAscii(Psdu[10], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // NodeType LSByte
-            BinToAscii(Psdu[8], &U1TxBuf[i], 2, 0);
-            i += 2; // NodeID MSByte
-            BinToAscii(Psdu[7], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // NodeID LSByte
-            BinToAscii(Psdu[2], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // Sequence Number
-            BinToAscii(Psdu[9], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // Node Status
-            BinToAscii(Psdu[12], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // Packet Type
-            BinToAscii(Psdu[14], &U1TxBuf[i], 2, 0);
-            i += 2; // Battery Voltage MSByte
-            BinToAscii(Psdu[13], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // Battery Voltage LSByte
-            BinToAscii(Psdu[15], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // Temperature
-            BinToAscii(Psdu[17], &U1TxBuf[i], 2, 0);
-            i += 2; // AccX LSByte
-            BinToAscii(Psdu[16], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // AccX MSByte
-            BinToAscii(Psdu[19], &U1TxBuf[i], 2, 0);
-            i += 2; // AccY LSByte
-            BinToAscii(Psdu[18], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // AccY MSByte
-            BinToAscii(Psdu[21], &U1TxBuf[i], 2, 0);
-            i += 2; // AccZ LSByte
-            BinToAscii(Psdu[20], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // AccZ MSByte
-            BinToAscii(Psdu[24], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // LQI
-            BinToAscii(Psdu[25], &U1TxBuf[i], 2, 0);
-            i += 2;
-            U1TxBuf[i++] = ' '; // RSSI (see table 3-8 in MRF24J40 datasheet)
-            U1TxBuf[i++] = '\n';
-            U1TxBuf[i++] = '\r';
-            U1TxBufIndex = 0;
-            U1TxBufLen = i;
-            U1Tx();
-            while (U1TxCompleted == 0); // wait for transmission of welcome message
-*/
-            // If a DATA frame has been received
-            if ((Psdu[0] & 0x07) == MAC_FC_DATA_FRAME) {
-            }// END of DATA frame processing
-
-                // If a COMMAND frame has been received
-            else if ((Psdu[0] & 0x07) == MAC_FC_COMMAND_FRAME) {
-                // if ASSOCIATE request is received from a node, add the node to ACL list & send ASSOCIATE RESPONSE with short address
-                if (((Psdu[1] & 0x0c) >> 2) == MAC_ADDR_MODE_SHORT) {
-                    if (Psdu[17] == MAC_ASSOCIATION_REQUEST)
-                        MLME_ASSOCIATE_RESPONSE();
-                } else if (((Psdu[1] & 0x0c) >> 2) == MAC_ADDR_MODE_EXTENDED) {
-                    if (Psdu[23] == MAC_ASSOCIATION_REQUEST)
-                        MLME_ASSOCIATE_RESPONSE();
-                }
-            } // END of COMMAND frame processing
-            __delay_ms(500);
-           
-            GREENLED = 0;
-            T8 = MCPS_DATA_REQUEST(MAC_ADDR_MODE_SHORT, MacPANID, (unsigned char *) &MacShortAddress, MAC_ADDR_MODE_SHORT, MacPANID, (unsigned char *) &MacCoordShortAddress, datalength, &datapkt[0], 1, 0x1);
+        // if it is periodic timeout
+        if (PeriodicIntOccurred) {
+            PeriodicIntOccurred = 0;
+            AcquireData();
+            FormPeriodicDataPkt();
+            T8 = MCPS_DATA_REQUEST(MAC_ADDR_MODE_SHORT, MacPANID, (unsigned char *) &MacShortAddress, MAC_ADDR_MODE_SHORT, MacPANID, (unsigned char *) &MacCoordShortAddress, MsduLength, &Msdu[0], 1, 0x1);
         }
-         
     }
     return 0;
 }
-
-/* This function converts the binary value passed to it into an ASCII string which it stores at the array pointed to by Buf.
-   If DecHex is 1, it converts into Decimal string, else Hexadecimal string.  It converts to NumChars significant digits.
- */
-/*void BinToAscii(unsigned int Binary, unsigned char *Buf, unsigned char NumChars, unsigned char DecHex) {
-    if (DecHex) {
-        switch (NumChars) {
-            case 4:
-                *Buf++ = (Binary / 1000) + 0x30;
-            case 3:
-                *Buf++ = ((Binary % 1000) / 100) + 0x30;
-            case 2:
-                *Buf++ = ((Binary % 100) / 10) + 0x30;
-            case 1:
-                *Buf++ = (Binary % 10) + 0x30;
-                break;
-            default:
-                break;
-        }
-    } else {
-        switch (NumChars) {
-            case 4:
-                if (((Binary >> 12) & 0x0f) <= 9)
-                    *Buf++ = ((Binary >> 12) & 0x0f) + 0x30;
-                else
-                    *Buf++ = ((Binary >> 12) & 0x0f) + 0x37;
-            case 3:
-                if (((Binary >> 8) & 0x0f) <= 9)
-                    *Buf++ = ((Binary >> 8) & 0x0f) + 0x30;
-                else
-                    *Buf++ = ((Binary >> 8) & 0x0f) + 0x37;
-            case 2:
-                if (((Binary >> 4) & 0x0f) <= 9)
-                    *Buf++ = ((Binary >> 4) & 0x0f) + 0x30;
-                else
-                    *Buf++ = ((Binary >> 4) & 0x0f) + 0x37;
-            case 1:
-                if (((Binary) & 0x0f) <= 9)
-                    *Buf++ = ((Binary) & 0x0f) + 0x30;
-                else
-                    *Buf++ = ((Binary) & 0x0f) + 0x37;
-                break;
-            default:
-                break;
-        }
-    }
-}  End of BinToAscii() */
